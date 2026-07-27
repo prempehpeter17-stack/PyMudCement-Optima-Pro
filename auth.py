@@ -1,172 +1,101 @@
 import os
-import logging
-from datetime import datetime, timedelta, timezone
-from typing import Optional
+from datetime import datetime, timedelta
+from typing import Optional 
 
-import jwt
+from fastapi import Depends, HTTPException, status
+from fastapi.security import OAuth2PasswordBearer
+from jose import JWTError, jwt
 from passlib.context import CryptContext
-from fastapi import APIRouter, Depends, HTTPException, status
-from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.future import select
+from sqlalchemy.future import select 
 
-# Import database models and session dependency from your unified database.py
-from database import get_db, User
+from database import get_db, UserModel 
 
-logger = logging.getLogger("pymudcement_optima")
-
-# =====================================================================
-# 1. Security Configuration
-# =====================================================================
-SECRET_KEY = os.getenv("SECRET_KEY", "SUPER_SECRET_CHANGE_ME_IN_PRODUCTION_KEY_987654321")
+# Secret Configuration
+SECRET_KEY = os.getenv("JWT_SECRET_KEY", "optimapro_super_secret_jwt_key_2026")
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "120"))
+ACCESS_TOKEN_EXPIRE_MINUTES = 480  # 8 Hours 
 
-# Password hashing context using bcrypt
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login") 
 
-# OAuth2 scheme looking for Bearer token in the Authorization header
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login")
-
-router = APIRouter()
-
-# =====================================================================
-# 2. Helper Functions (Hashing & Tokens)
-# =====================================================================
-def verify_password(plain_password: str, hashed_password: str) -> bool:
-    """Verifies a raw password against its stored bcrypt hash."""
-    return pwd_context.verify(plain_password, hashed_password)
-
-def get_password_hash(password: str) -> str:
-    """Generates a secure bcrypt hash from a raw password."""
-    return pwd_context.hash(password)
-
-def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
-    """Encodes user identity payload into a signed JWT access token."""
-    to_encode = data.copy()
-    expire = datetime.now(timezone.utc) + (expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
-    to_encode.update({"exp": expire})
-    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
-
-# =====================================================================
-# 3. Pydantic Schemas for Auth Payloads
-# =====================================================================
-class UserCreate(BaseModel):
-    email: EmailStr
-    password: str = Field(..., min_length=8, description="Password must be at least 8 characters long")
-    full_name: Optional[str] = None
-
-class UserResponse(BaseModel):
-    id: int
-    email: EmailStr
-    full_name: Optional[str] = None
-    role: str
-    created_at: datetime
-
-    class Config:
-        from_attributes = True
+# ------------------------------------------------------------------------------
+# Pydantic Authentication Schemas
+# ------------------------------------------------------------------------------ 
 
 class Token(BaseModel):
-    access_token: str
-    token_type: str = "bearer"
+    access_token: str
+    token_type: str 
 
 class TokenData(BaseModel):
-    email: Optional[str] = None
+    email: Optional[str] = None 
 
-# =====================================================================
-# 4. Auth Dependencies (Protecting Endpoints)
-# =====================================================================
+class UserCreate(BaseModel):
+    email: EmailStr
+    password: str
+    role: Optional[str] = "drilling_engineer" 
+
+class UserResponse(BaseModel):
+    id: int
+    email: EmailStr
+    role: str 
+
+    class Config:
+        from_attributes = True 
+
+# ------------------------------------------------------------------------------
+# Security Utility Functions
+# ------------------------------------------------------------------------------ 
+
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    """Verifies a plain text password against a hashed stored password."""
+    return pwd_context.verify(plain_password, hashed_password) 
+
+def get_password_hash(password: str) -> str:
+    """Hashes a plain password."""
+    return pwd_context.hash(password) 
+
+def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
+    """Encodes a JWT payload with an expiration timestamp."""
+    to_encode = data.copy()
+    if expires_delta:
+        expire = datetime.utcnow() + expires_delta
+    else:
+        expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    
+    to_encode.update({"exp": expire})
+    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    return encoded_jwt 
+
+# ------------------------------------------------------------------------------
+# User Verification & Auth Dependency
+# ------------------------------------------------------------------------------ 
+
 async def get_current_user(
-    token: str = Depends(oauth2_scheme),
-    db: AsyncSession = Depends(get_db)
-) -> User:
-    """
-    Decodes the incoming JWT token, validates claims, and retrieves the User
-    from the database. Use this with Depends(get_current_user) to secure endpoints.
-    """
-    credentials_exception = HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Could not validate credentials or token has expired.",
-        headers={"WWW-Authenticate": "Bearer"},
-    )
+    token: str = Depends(oauth2_scheme),
+    db: AsyncSession = Depends(get_db)
+) -> UserModel:
+    """FastAPI Dependency for authenticating requests via JWT bearer token."""
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        email: str = payload.get("sub")
+        if email is None:
+            raise credentials_exception
+        token_data = TokenData(email=email)
+    except JWTError:
+        raise credentials_exception 
 
-    try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        email: str = payload.get("sub")
-        if email is None:
-            raise credentials_exception
-        token_data = TokenData(email=email)
-    except jwt.PyJWTError as exc:
-        logger.warning(f"Failed JWT verification attempt: {exc}")
-        raise credentials_exception
-
-    result = await db.execute(select(User).where(User.email == token_data.email))
-    user = result.scalars().first()
-
-    if user is None:
-        raise credentials_exception
-
-    return user
-
-# =====================================================================
-# 5. Auth API Endpoints
-# =====================================================================
-@router.post("/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
-async def register_user(user_in: UserCreate, db: AsyncSession = Depends(get_db)):
-    """Registers a new user with a hashed password in the database."""
-    # Check if user already exists
-    result = await db.execute(select(User).where(User.email == user_in.email))
-    existing_user = result.scalars().first()
-   
-    if existing_user:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="A user with this email address already exists."
-        )
-
-    # Hash password and store new user
-    hashed_pwd = get_password_hash(user_in.password)
-    new_user = User(
-        email=user_in.email,
-        hashed_password=hashed_pwd,
-        full_name=user_in.full_name,
-        role="engineer"
-    )
-
-    db.add(new_user)
-    await db.commit()
-    await db.refresh(new_user)
-
-    logger.info(f"Registered new engineer account: {new_user.email}")
-    return new_user
-
-@router.post("/login", response_model=Token)
-async def login(
-    form_data: OAuth2PasswordRequestForm = Depends(),
-    db: AsyncSession = Depends(get_db)
-):
-    """
-    Authenticates user credentials using OAuth2 form fields (username=email, password).
-    Returns a signed JWT bearer token.
-    """
-    result = await db.execute(select(User).where(User.email == form_data.username))
-    user = result.scalars().first()
-
-    if not user or not verify_password(form_data.password, user.hashed_password):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect email or password.",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-
-    # Generate JWT access token with the user's email as subject ('sub')
-    access_token = create_access_token(data={"sub": user.email, "role": user.role})
-    logger.info(f"User logged in successfully: {user.email}")
-
-    return {"access_token": access_token, "token_type": "bearer"}
-
-@router.get("/me", response_model=UserResponse)
-async def get_authenticated_user_profile(current_user: User = Depends(get_current_user)):
-    """Returns the profile of the currently logged-in user."""
-    return current_user
+    result = await db.execute(select(UserModel).where(UserModel.email == token_data.email))
+    user = result.scalars().first()
+    
+    if user is None:
+        raise credentials_exception
+        
+    return user
