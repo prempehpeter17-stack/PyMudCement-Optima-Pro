@@ -1,141 +1,232 @@
-import numpy as np
-from typing import Dict, List, Any, Optional
+import math
+import logging
+from enum import Enum
+from typing import List, Dict, Any, Optional
+from pydantic import BaseModel, Field
 
-class DrillingKnowledgeBase:
-    """
-    A lightweight vector-style knowledge base for drilling engineering lessons learned,
-    IADC/API guidelines, and operational failure modes.
-    """
-    def __init__(self):
-        # Local mock database containing high-fidelity operational knowledge
-        self.kb = [
-            {
-                "hazard": "Pack-off / Hole Cleaning Failure",
-                "keywords": ["ecd_high", "pressure_spike", "cuttings", "annular_loss"],
-                "diagnosis": "Accumulated drill cuttings are settling in the annulus, restricting flow area and spiking dynamic pressures.",
-                "actions": [
-                    "Back off the bottom immediately to avoid sticking the BHA.",
-                    "Reciprocate the drill string while gradually increasing pump rate to lift the bed.",
-                    "Monitor torque spikes; if torque increases, discontinue rotation."
-                ]
-            },
-            {
-                "hazard": "Lost Circulation",
-                "keywords": ["ecd_low", "pressure_drop", "losses", "fracture"],
-                "diagnosis": "Equivalent Circulating Density has breached the formation fracture gradient, creating induced fractures.",
-                "actions": [
-                    "Immediately stage down mud pumps to lower equivalent circulating density.",
-                    "Prepare to spot a Lost Circulation Material (LCM) pill across the loss zone.",
-                    "Monitor fluid levels in the active pits closely to calculate loss rate."
-                ]
-            },
-            {
-                "hazard": "Bit Balling",
-                "keywords": ["rop_low", "pressure_spike", "torque_low"],
-                "diagnosis": "Sticky argillaceous formations (shale) are packing around the bit cutters, destroying cutting efficiency.",
-                "actions": [
-                    "Pick up off bottom and pump high-velocity sweeps.",
-                    "Spin the string at high RPM (off-bottom) to attempt to clear the cutters via centrifugal force.",
-                    "Consider adding anti-balling chemical treatment to the active system."
-                ]
+logger = logging.getLogger("PyMudCementOptimaPro.AIEngine")
+
+class RheologyModel(str, Enum):
+    NEWTONIAN = "Newtonian"
+    BINGHAM_PLASTIC = "Bingham Plastic"
+    POWER_LAW = "Power Law"
+    HERSCHEL_BULKLEY = "Herschel-Bulkley"
+
+class NozzleInput(BaseModel):
+    size_in_32nds: int = Field(..., gt=0, description="Nozzle size in 1/32 inches")
+
+class WellSegment(BaseModel):
+    name: str = Field(default="Segment", description="Segment identifier")
+    length_ft: float = Field(..., ge=0, description="Length of segment in feet")
+    pipe_od_in: float = Field(..., gt=0, description="Outer diameter of pipe in inches")
+    pipe_id_in: float = Field(..., gt=0, description="Inner diameter of pipe in inches")
+    hole_id_in: float = Field(..., gt=0, description="Hole size or casing ID in inches")
+    mud_weight_ppg: float = Field(..., gt=0, description="Fluid density in ppg")
+   
+    viscosity_cp: float = Field(default=20.0, ge=0, description="Plastic Viscosity (cP)")
+    yield_point_lb_100ft2: float = Field(default=15.0, ge=0, description="Yield Point (lb/100ft²)")
+    tau_0_lb_100ft2: float = Field(default=5.0, ge=0, description="Yield stress for Herschel-Bulkley")
+    n_index: float = Field(default=0.65, gt=0, le=1.0, description="Flow behavior index (n)")
+    k_consistency: float = Field(default=300.0, gt=0, description="Consistency index")
+
+class DrillingHydraulicsEngine:
+    """Industrial Drilling Hydraulics Physics Engine."""
+
+    def __init__(
+        self,
+        surface_mud_weight_ppg: float,
+        flow_rate_gpm: float,
+        total_depth_ft: float,
+        plastic_viscosity_cp: float = 20.0,
+        yield_point_lb_100ft2: float = 15.0,
+        rheology_model: RheologyModel = RheologyModel.BINGHAM_PLASTIC
+    ):
+        self.surface_mud_weight_ppg = max(0.1, surface_mud_weight_ppg)
+        self.flow_rate_gpm = max(0.1, flow_rate_gpm)
+        self.total_depth_ft = max(1.0, total_depth_ft)
+        self.plastic_viscosity_cp = plastic_viscosity_cp
+        self.yield_point_lb_100ft2 = yield_point_lb_100ft2
+        self.rheology_model = rheology_model
+        self.segments: List[WellSegment] = []
+        self.nozzles: List[NozzleInput] = []
+
+    def add_segment(self, segment: WellSegment) -> None:
+        self.segments.append(segment)
+
+    def add_nozzle(self, nozzle: NozzleInput) -> None:
+        self.nozzles.append(nozzle)
+
+    @staticmethod
+    def calculate_pipe_velocity(flow_rate_gpm: float, pipe_id_in: float) -> float:
+        if pipe_id_in <= 0:
+            raise ValueError("Pipe ID must be greater than 0.")
+        return (24.51 * flow_rate_gpm) / (pipe_id_in ** 2)
+
+    @staticmethod
+    def calculate_annular_velocity(flow_rate_gpm: float, hole_id_in: float, pipe_od_in: float) -> float:
+        annular_area = hole_id_in ** 2 - pipe_od_in ** 2
+        if annular_area <= 0:
+            raise ValueError("Hole ID must be strictly greater than Pipe OD.")
+        return (24.51 * flow_rate_gpm) / annular_area
+
+    def calculate_annular_friction_gradient(self, seg: WellSegment, v_ann_fpm: float) -> float:
+        dh = seg.hole_id_in - seg.pipe_od_in
+        if dh <= 0:
+            return 0.0
+
+        if self.rheology_model == RheologyModel.NEWTONIAN:
+            return (seg.viscosity_cp * v_ann_fpm) / (1500 * (dh ** 2))
+        elif self.rheology_model == RheologyModel.BINGHAM_PLASTIC:
+            pv = seg.viscosity_cp
+            yp = seg.yield_point_lb_100ft2
+            return ((pv * v_ann_fpm) / (1000 * (dh ** 2))) + (yp / (200 * dh))
+        elif self.rheology_model == RheologyModel.POWER_LAW:
+            n, k = seg.n_index, seg.k_consistency
+            v_sec = v_ann_fpm / 60.0
+            shear_rate = ((2 * n + 1) / (3 * n)) * ((12 * v_sec) / (dh / 12.0))
+            tau = k * (shear_rate ** n)
+            return tau / (300 * dh)
+        elif self.rheology_model == RheologyModel.HERSCHEL_BULKLEY:
+            n, k, tau_0 = seg.n_index, seg.k_consistency, seg.tau_0_lb_100ft2
+            v_sec = v_ann_fpm / 60.0
+            shear_rate = ((2 * n + 1) / (3 * n)) * ((12 * v_sec) / (dh / 12.0))
+            tau = tau_0 + (k * (shear_rate ** n))
+            return tau / (300 * dh)
+        return 0.0
+
+    def calculate_pipe_friction_gradient(self, seg: WellSegment, v_pipe_fpm: float) -> float:
+        d_int = seg.pipe_id_in
+        if d_int <= 0:
+            return 0.0
+        pv, yp = seg.viscosity_cp, seg.yield_point_lb_100ft2
+        return ((pv * v_pipe_fpm) / (1500 * (d_int ** 2))) + (yp / (225 * d_int))
+
+    def calculate_bit_hydraulics(self, mud_weight_ppg: float) -> Dict[str, float]:
+        if not self.nozzles:
+            return {
+                "tna_sq_in": 0.0,
+                "bit_pressure_drop_psi": 300.0,  # Constant estimate fallback
+                "jet_velocity_fps": 0.0,
+                "hydraulic_horsepower_hhp": 0.0,
+                "jif_lbf": 0.0
             }
-        ]
 
-    def query_knowledge(self, diagnostic_tags: List[str]) -> List[Dict[str, Any]]:
-        """Simulates semantic matching by analyzing tag intersections and weights."""
-        matches = []
-        for entry in self.kb:
-            # Check how many diagnostic keywords overlap with the entry
-            intersection = set(diagnostic_tags).intersection(set(entry["keywords"]))
-            if intersection:
-                match_score = len(intersection) / len(entry["keywords"])
-                matches.append((match_score, entry))
-       
-        # Sort by best structural match
-        matches.sort(key=lambda x: x[0], reverse=True)
-        return [item[1] for item in matches]
+        tna = sum(math.pi * ((n.size_in_32nds / 64.0) ** 2) for n in self.nozzles)
+        if tna <= 0:
+            return {"tna_sq_in": 0.0, "bit_pressure_drop_psi": 300.0, "jet_velocity_fps": 0.0, "hydraulic_horsepower_hhp": 0.0, "jif_lbf": 0.0}
 
-class DiagnosticEngine:
-    """
-    Evaluates real-time sensor outputs against theoretical physics baselines
-    to trigger proactive engineering warnings.
-    """
-    def __init__(self, knowledge_base: DrillingKnowledgeBase):
-        self.kb = knowledge_base
-        # Standard structural operational limits
-        self.ECD_UPPER_LIMIT_MULTIPLIER = 1.08  # 8% over ESD indicates high packing risk
-        self.ECD_LOWER_LIMIT_MULTIPLIER = 0.95  # 5% below ESD indicates dynamic downhole losses
-
-    def analyze_telemetry(self, physics_metrics: Dict[str, Any], historical_esd: float) -> Dict[str, Any]:
-        """
-        Interprets physics engine snapshots to diagnose faults and extract recommendations.
-        """
-        current_ecd = physics_metrics.get("ecd_ppg", 0.0)
-        friction_loss = physics_metrics.get("total_annular_friction_loss_psi", 0.0)
-       
-        diagnostic_tags = []
-        status = "OPERATIONAL_NOMINAL"
-        severity = "GREEN"
-        summary = "Wellbore hydraulics are operating within safe planned margins."
-       
-        # 1. Evaluate anomalies against physics limits
-        if current_ecd > (historical_esd * self.ECD_UPPER_LIMIT_MULTIPLIER):
-            status = "ANOMALY_CRITICAL_HIGH"
-            severity = "RED"
-            diagnostic_tags.extend(["ecd_high", "pressure_spike", "annular_loss"])
-            summary = "Critical ECD spike detected. Annular geometry is choking or packing off."
-           
-        elif current_ecd < (historical_esd * self.ECD_LOWER_LIMIT_MULTIPLIER) and friction_loss > 0:
-            status = "ANOMALY_CRITICAL_LOW"
-            severity = "RED"
-            diagnostic_tags.extend(["ecd_low", "pressure_drop", "losses"])
-            summary = "Severe pressure drop detected downhole. Potential fluid loss or severe washouts."
-
-        # 2. Query the knowledge base if an anomaly is captured
-        recommendations = []
-        matched_hazard = "None"
-        detailed_diagnosis = "No structural faults observed."
-       
-        if diagnostic_tags:
-            kb_results = self.kb.query_knowledge(diagnostic_tags)
-            if kb_results:
-                primary_match = kb_results[0]
-                matched_hazard = primary_match["hazard"]
-                detailed_diagnosis = primary_match["diagnosis"]
-                recommendations = primary_match["actions"]
+        v_jet = (0.3208 * self.flow_rate_gpm) / tna
+        bit_dp = (mud_weight_ppg * (self.flow_rate_gpm ** 2)) / (10858 * (tna ** 2))
+        hhp = (self.flow_rate_gpm * bit_dp) / 1714.0
+        jif = (mud_weight_ppg * self.flow_rate_gpm * v_jet) / 1930.0
 
         return {
-            "status": status,
-            "severity": severity,
-            "summary": summary,
-            "matched_hazard": matched_hazard,
-            "detailed_diagnosis": detailed_diagnosis,
-            "actionable_recommendations": recommendations
+            "tna_sq_in": round(tna, 4),
+            "bit_pressure_drop_psi": round(bit_dp, 2),
+            "jet_velocity_fps": round(v_jet, 2),
+            "hydraulic_horsepower_hhp": round(hhp, 2),
+            "jif_lbf": round(jif, 2)
         }
 
-# --- Integrated Test Loop ---
-if __name__ == "__main__":
-    print("Testing AI Engine & Failure Diagnostics...")
-   
-    # Initialize components
-    kb = DrillingKnowledgeBase()
-    ai_diagnostics = DiagnosticEngine(knowledge_base=kb)
-   
-    # Case A: Nominal Physics Snapshot
-    nominal_snapshot = {"ecd_ppg": 10.4, "total_annular_friction_loss_psi": 250.0}
-    result_a = ai_diagnostics.analyze_telemetry(nominal_snapshot, historical_esd=10.2)
-   
-    print("\n[Test 1] Nominal Conditions Output:")
-    print(f"Status: {result_a['status']} | Severity: {result_a['severity']}")
-   
-    # Case B: Unsafe Packed-off Condition (High Friction / Spiked ECD)
-    abnormal_snapshot = {"ecd_ppg": 11.2, "total_annular_friction_loss_psi": 980.0}
-    result_b = ai_diagnostics.analyze_telemetry(abnormal_snapshot, historical_esd=10.2)
-   
-    print("\n[Test 2] Pack-Off Hazard Detected:")
-    print(f"Status: {result_b['status']} | Severity: {result_b['severity']}")
-    print(f"Hazard Type: {result_b['matched_hazard']}")
-    print(f"Root Cause: {result_b['detailed_diagnosis']}")
-    print("Mitigation Blueprint:")
-    for step in result_b['actionable_recommendations']:
-        print(f" -> {step}")
+    def solve(self) -> Dict[str, Any]:
+        """Fixed missing `self` argument in method signature."""
+        if not self.segments:
+            raise ValueError("No wellbore segments provided for physics evaluation.")
+
+        total_annular_dp_psi = 0.0
+        total_pipe_dp_psi = 0.0
+        segment_results = []
+        cumulative_depth = 0.0
+
+        for idx, seg in enumerate(self.segments):
+            v_ann = self.calculate_annular_velocity(self.flow_rate_gpm, seg.hole_id_in, seg.pipe_od_in)
+            v_pipe = self.calculate_pipe_velocity(self.flow_rate_gpm, seg.pipe_id_in)
+
+            dp_dl_ann = self.calculate_annular_friction_gradient(seg, v_ann)
+            dp_dl_pipe = self.calculate_pipe_friction_gradient(seg, v_pipe)
+
+            seg_ann_loss = dp_dl_ann * seg.length_ft
+            seg_pipe_loss = dp_dl_pipe * seg.length_ft
+
+            total_annular_dp_psi += seg_ann_loss
+            total_pipe_dp_psi += seg_pipe_loss
+            cumulative_depth += seg.length_ft
+
+            local_ecd = seg.mud_weight_ppg + (total_annular_dp_psi / (0.052 * max(1.0, cumulative_depth)))
+
+            segment_results.append({
+                "segment_index": idx + 1,
+                "segment_name": seg.name,
+                "length_ft": seg.length_ft,
+                "annular_velocity_fpm": round(v_ann, 2),
+                "pipe_velocity_fpm": round(v_pipe, 2),
+                "annular_loss_psi": round(seg_ann_loss, 2),
+                "pipe_loss_psi": round(seg_pipe_loss, 2),
+                "local_ecd_ppg": round(local_ecd, 3)
+            })
+
+        bit_results = self.calculate_bit_hydraulics(self.surface_mud_weight_ppg)
+        surface_equipment_loss = 50.0
+        total_spp_psi = surface_equipment_loss + total_pipe_dp_psi + bit_results["bit_pressure_drop_psi"] + total_annular_dp_psi
+        bottomhole_ecd = self.surface_mud_weight_ppg + (total_annular_dp_psi / (0.052 * self.total_depth_ft))
+
+        return {
+            "rheology_model_used": self.rheology_model.value,
+            "flow_rate_gpm": round(self.flow_rate_gpm, 2),
+            "total_depth_ft": round(self.total_depth_ft, 2),
+            "surface_mud_weight_ppg": round(self.surface_mud_weight_ppg, 2),
+            "plastic_viscosity_cp": round(self.plastic_viscosity_cp, 2),
+            "yield_point_lb_100ft2": round(self.yield_point_lb_100ft2, 2),
+            "equivalent_circulating_density_ecd_ppg": round(bottomhole_ecd, 3),
+            "standpipe_pressure_spp_psi": round(total_spp_psi, 2),
+            "total_annular_pressure_loss_psi": round(total_annular_dp_psi, 2),
+            "total_pipe_pressure_loss_psi": round(total_pipe_dp_psi, 2),
+            "bit_hydraulics": bit_results,
+            "segment_breakdown": segment_results
+        }
+
+class DiagnosticEngine:
+    """AI Telemetry Diagnostic Module."""
+    def __init__(self, ecd_upper_threshold_delta: float = 1.5, max_spp_limit: float = 3500.0):
+        self.ecd_upper_threshold_delta = ecd_upper_threshold_delta
+        self.max_spp_limit = max_spp_limit
+
+    def analyze_telemetry(self, physics_metrics: Dict[str, Any], historical_esd: float) -> Dict[str, Any]:
+        ecd = physics_metrics.get("equivalent_circulating_density_ecd_ppg", 0.0)
+        spp = physics_metrics.get("standpipe_pressure_spp_psi", 0.0)
+
+        severity = "GREEN"
+        status_msg = "SUCCESS"
+        matched_hazard = "None"
+        recommendations = [
+            "Maintain current drilling parameters and pump SPM.",
+            "Continue regular monitoring of shaker cuttings and torque/drag trends."
+        ]
+
+        if ecd > (historical_esd + self.ecd_upper_threshold_delta):
+            severity = "RED"
+            matched_hazard = "Excessive ECD / High Risk of Formation Fracturing"
+            recommendations = [
+                "Reduce flow rate (GPM) or pump speed to lower annular friction pressure drop.",
+                "Dilute or treat mud to lower Plastic Viscosity (PV) and Yield Point (YP).",
+                "Verify hole cleaning status; check for cuttings pack-off along the annulus."
+            ]
+        elif spp > self.max_spp_limit:
+            severity = "YELLOW"
+            matched_hazard = "High Standpipe Pressure (SPP Warning)"
+            recommendations = [
+                "Check standpipe manifold and surface line valve alignments.",
+                "Inspect bit nozzles for partial plugging or balling.",
+                "Verify drill string internal restrictions."
+            ]
+
+        return {
+            "status": status_msg,
+            "severity": severity,
+            "matched_hazard": matched_hazard,
+            "detailed_diagnosis": (
+                f"Operating ECD is {ecd:.2f} ppg (Surface Mud Weight: {historical_esd:.2f} ppg) "
+                f"with Standpipe Pressure at {spp:.1f} psi."
+            ),
+            "actionable_recommendations": recommendations
+        }

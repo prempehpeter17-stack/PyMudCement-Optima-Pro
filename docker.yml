@@ -1,0 +1,25 @@
+version: '3.8'
+
+services:
+  backend:
+    build: .
+    container_name: optimapro_backend
+    command: uvicorn main:app --host 0.0.0.0 --port 8000
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=sqlite+aiosqlite:///./pymudcement_optima.db
+      - JWT_SECRET_KEY=optima_pro_super_secret_jwt_key_2026
+    volumes:
+      - .:/app
+
+  frontend:
+    build: .
+    container_name: optimapro_frontend
+    command: streamlit run app.py --server.port 8501 --server.address 0.0.0.0
+    ports:
+      - "8501:8501"
+    environment:
+      - BACKEND_URL=http://backend:8000
+    depends_on:
+      - backend

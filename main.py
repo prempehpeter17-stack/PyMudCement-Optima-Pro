@@ -1,52 +1,44 @@
-import time
+import io
 import logging
-import sys
 from contextlib import asynccontextmanager
-from typing import List, Optional
+from typing import Dict, Any, List, Optional
 
-from fastapi import FastAPI, Request, Depends, HTTPException, status
+from fastapi import FastAPI, HTTPException, status, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
-from fastapi.exceptions import RequestValidationError
-from sqlalchemy.ext.asyncio import AsyncSession
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-# 1. Database Imports
-from database import init_db, engine, get_db, User, HydraulicsRun
+# Internal Engine & Helper Imports
+from ai_engine import DrillingHydraulicsEngine, WellSegment, DiagnosticEngine
+from pdf_generator import generate_hydraulics_pdf
+from database import init_db
 
-# 2. Physics Engine Imports (Linking physics.py)
-from physics import (
-    DrillingHydraulicsEngine,
-    WellSegment,
-    RheologyModel,
-    NozzleInput
-)
+# Handle Auth Router safely
+try:
+    from routers.auth_routes import router as auth_router
+except ImportError:
+    try:
+        from auth import router as auth_router
+    except ImportError:
+        auth_router = None
 
-# 3. Authentication Imports (Linking auth.py)
-import auth
-from auth import get_current_user
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("PyMudCementOptimaPro.API")
 
-# =====================================================================
-# Logging & Lifespan Configuration
-# =====================================================================
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)-8s | %(name)s:%(funcName)s:%(lineno)d - %(message)s",
-    handlers=[logging.StreamHandler(sys.stdout)]
-)
-logger = logging.getLogger("pymudcement_optima")
+ai_diagnostics: Optional[DiagnosticEngine] = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("Starting PyMudCement Optima API & initializing database...")
+    logger.info("Initializing PyMudCement Optima Pro engines...")
     await init_db()
+    global ai_diagnostics
+    ai_diagnostics = DiagnosticEngine(ecd_upper_threshold_delta=1.5, max_spp_limit=3500.0)
     yield
-    logger.info("Closing database connection pool...")
-    await engine.dispose()
+    logger.info("Shutting down PyMudCement Optima Pro services...")
 
 app = FastAPI(
-    title="PyMudCement Optima API",
-    description="Production-Grade Drilling Hydraulics & Dynamic Diagnostics Engine",
+    title="PyMudCement Optima Pro API",
+    description="Enterprise API engine providing drilling hydraulics calculations and reporting.",
     version="1.0.0",
     lifespan=lifespan
 )
@@ -59,86 +51,111 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Include Authentication Router from auth.py
-app.include_router(auth.router, prefix="/api/v1/auth", tags=["Authentication & Security"])
+if auth_router:
+    app.include_router(auth_router)
 
-# =====================================================================
-# API Schemas
-# =====================================================================
-class HydraulicsSolveRequest(BaseModel):
-    well_id: Optional[int] = None
-    flow_rate_gpm: float = Field(..., gt=0, description="Flow rate in GPM")
-    total_depth_ft: float = Field(..., gt=0, description="Total depth in feet")
-    surface_mud_weight_ppg: float = Field(..., gt=0, description="Surface mud weight in ppg")
-    rheology_model: RheologyModel = Field(default=RheologyModel.BINGHAM_PLASTIC)
-    nozzles: List[NozzleInput] = Field(default=[])
-    segments: List[WellSegment]
+class WellSegmentSchema(BaseModel):
+    name: str = Field(default="Drill Pipe", description="Name of the segment")
+    top_md: float = Field(default=0.0, ge=0.0, description="Top Measured Depth (ft)")
+    bottom_md: float = Field(default=7000.0, ge=0.0, description="Bottom Measured Depth (ft)")
+    pipe_od: float = Field(default=5.0, gt=0.0, description="Pipe Outer Diameter (in)")
+    pipe_id: float = Field(default=4.276, gt=0.0, description="Pipe Inner Diameter (in)")
+    hole_id: float = Field(default=8.5, gt=0.0, description="Hole ID (in)")
 
-# =====================================================================
-# Linked Hydraulics Endpoint
-# =====================================================================
-@app.post("/api/v1/hydraulics/solve", tags=["Hydraulics & Physics Engine"])
-async def solve_hydraulics(
-    payload: HydraulicsSolveRequest,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user)  # Protected route via JWT
-):
-    """
-    Executes multi-segment hydraulics calculations using the physics engine in `physics.py`
-    and persists the results to the database via `database.py`.
-    """
-    if not payload.segments:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="At least one well segment must be provided."
-        )
+class HydraulicsPayloadSchema(BaseModel):
+    flow_rate_gpm: float = Field(default=450.0, gt=0.0)
+    total_depth_ft: float = Field(default=8000.0, gt=0.0)
+    surface_mud_weight_ppg: float = Field(default=10.0, gt=0.0)
+    plastic_viscosity_cp: float = Field(default=20.0, ge=0.0)
+    yield_point_lb_100ft2: float = Field(default=15.0, ge=0.0)
+    segments: Optional[List[WellSegmentSchema]] = None
 
+@app.get("/", tags=["System Status"])
+async def root():
+    return {"system": "PyMudCement Optima Pro", "status": "OPERATIONAL", "version": "1.0.0"}
+
+@app.post("/api/v1/hydraulics/calculate", tags=["Hydraulics Engine"])
+async def calculate_hydraulics(payload: HydraulicsPayloadSchema):
     try:
-        # 1. Instantiate Physics Engine from physics.py
-        physics_engine = DrillingHydraulicsEngine(
+        engine = DrillingHydraulicsEngine(
             surface_mud_weight_ppg=payload.surface_mud_weight_ppg,
             flow_rate_gpm=payload.flow_rate_gpm,
             total_depth_ft=payload.total_depth_ft,
-            rheology_model=payload.rheology_model
+            plastic_viscosity_cp=payload.plastic_viscosity_cp,
+            yield_point_lb_100ft2=payload.yield_point_lb_100ft2
         )
 
-        # 2. Add segments and bit nozzles to the physics engine
-        for segment in payload.segments:
-            physics_engine.add_segment(segment)
-
-        for nozzle in payload.nozzles:
-            physics_engine.add_nozzle(nozzle)
-
-        # 3. Solve hydraulics calculations
-        results = physics_engine.solve()
-
-        # 4. Save results to the database using models in database.py
-        if payload.well_id:
-            hydraulics_record = HydraulicsRun(
-                well_id=payload.well_id,
-                run_label=f"Run - {payload.rheology_model.value}",
-                flow_rate_gpm=payload.flow_rate_gpm,
+        if payload.segments:
+            for seg in payload.segments:
+                seg_length = max(0.0, seg.bottom_md - seg.top_md)
+                engine.add_segment(WellSegment(
+                    name=seg.name,
+                    length_ft=seg_length,
+                    pipe_od_in=seg.pipe_od,
+                    pipe_id_in=seg.pipe_id,
+                    hole_id_in=seg.hole_id,
+                    mud_weight_ppg=payload.surface_mud_weight_ppg,
+                    viscosity_cp=payload.plastic_viscosity_cp,
+                    yield_point_lb_100ft2=payload.yield_point_lb_100ft2
+                ))
+        else:
+            engine.add_segment(WellSegment(
+                name="Default Drill String",
+                length_ft=payload.total_depth_ft,
+                pipe_od_in=5.0,
+                pipe_id_in=4.276,
+                hole_id_in=8.5,
                 mud_weight_ppg=payload.surface_mud_weight_ppg,
-                plastic_viscosity_cp=payload.segments[0].viscosity_cp,
-                yield_point_lb_100ft2=payload.segments[0].yield_point_lb_100ft2,
-                total_annular_pressure_loss_psi=results["total_annular_pressure_loss_psi"],
-                calculated_ecd_ppg=results["bottomhole_ecd_ppg"],
-                surface_spp_psi=results["standpipe_pressure_spp_psi"]
-            )
-            db.add(hydraulics_record)
-            await db.commit()
+                viscosity_cp=payload.plastic_viscosity_cp,
+                yield_point_lb_100ft2=payload.yield_point_lb_100ft2
+            ))
 
-        return {
-            "status": "success",
-            "executed_by": current_user.email,
-            "data": results
-        }
+        physics_results = engine.solve()
+        diagnostics = ai_diagnostics.analyze_telemetry(
+            physics_metrics=physics_results,
+            historical_esd=payload.surface_mud_weight_ppg
+        )
 
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
-    except Exception as exc:
-        logger.error(f"Hydraulics solve failed: {str(exc)}", exc_info=True)
+        return {"physics_results": physics_results, "diagnostics": diagnostics}
+
+    except Exception as e:
+        logger.error(f"Hydraulics calculation failed: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="An error occurred while computing wellbore physics."
+            detail=f"Calculation Engine Failure: {str(e)}"
         )
+
+@app.post("/api/v1/hydraulics/export-pdf", tags=["Reports"])
+async def export_pdf_report(payload: HydraulicsPayloadSchema):
+    try:
+        calc_response = await calculate_hydraulics(payload)
+        physics_results = calc_response["physics_results"]
+        diagnostics = calc_response["diagnostics"]
+
+        segments_data = [seg.model_dump() for seg in payload.segments] if payload.segments else []
+
+        pdf_buffer = generate_hydraulics_pdf(
+            results=physics_results,
+            diagnostic_report=diagnostics,
+            executed_by="PyMudCement Automated Engine",
+            segments=segments_data,
+            pv=payload.plastic_viscosity_cp,
+            yp=payload.yield_point_lb_100ft2
+        )
+
+        return StreamingResponse(
+            pdf_buffer,
+            media_type="application/pdf",
+            headers={"Content-Disposition": "attachment; filename=PyMudCement_OptimaPro_Report.pdf"}
+        )
+
+    except Exception as e:
+        logger.error(f"PDF Export failed: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"PDF Generation Error: {str(e)}"
+        )
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=False)
