@@ -11,4 +11,10 @@ python-multipart>=0.0.9
 reportlab>=4.1.0
 requests>=2.31.0
 pytest>=8.0.0
+<<<<<<< HEAD
 httpx>=0.27.0
+=======
+httpx>=0.27.0
+
+
+>>>>>>> e48e563910c4a690c93839dfcad9e4e037a068c9
