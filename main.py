@@ -1,26 +1,18 @@
-import io
 import logging
 from contextlib import asynccontextmanager
-from typing import Dict, Any, List, Optional
+from typing import List, Optional
 
 from fastapi import FastAPI, HTTPException, status, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-# Internal Engine & Helper Imports
+# Engine & DB Imports
 from ai_engine import DrillingHydraulicsEngine, WellSegment, DiagnosticEngine
 from pdf_generator import generate_hydraulics_pdf
-from database import init_db
-
-# Handle Auth Router safely
-try:
-    from routers.auth_routes import router as auth_router
-except ImportError:
-    try:
-        from auth import router as auth_router
-    except ImportError:
-        auth_router = None
+from database import init_db, UserModel
+from auth import get_current_user
+from router import router as auth_router
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("PyMudCementOptimaPro.API")
@@ -51,16 +43,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-if auth_router:
-    app.include_router(auth_router)
+# Register Authentication Router directly
+app.include_router(auth_router)
 
 class WellSegmentSchema(BaseModel):
     name: str = Field(default="Drill Pipe", description="Name of the segment")
-    top_md: float = Field(default=0.0, ge=0.0, description="Top Measured Depth (ft)")
-    bottom_md: float = Field(default=7000.0, ge=0.0, description="Bottom Measured Depth (ft)")
-    pipe_od: float = Field(default=5.0, gt=0.0, description="Pipe Outer Diameter (in)")
-    pipe_id: float = Field(default=4.276, gt=0.0, description="Pipe Inner Diameter (in)")
-    hole_id: float = Field(default=8.5, gt=0.0, description="Hole ID (in)")
+    top_md: float = Field(default=0.0, ge=0.0)
+    bottom_md: float = Field(default=7000.0, ge=0.0)
+    pipe_od: float = Field(default=5.0, gt=0.0)
+    pipe_id: float = Field(default=4.276, gt=0.0)
+    hole_id: float = Field(default=8.5, gt=0.0)
 
 class HydraulicsPayloadSchema(BaseModel):
     flow_rate_gpm: float = Field(default=450.0, gt=0.0)
@@ -75,7 +67,10 @@ async def root():
     return {"system": "PyMudCement Optima Pro", "status": "OPERATIONAL", "version": "1.0.0"}
 
 @app.post("/api/v1/hydraulics/calculate", tags=["Hydraulics Engine"])
-async def calculate_hydraulics(payload: HydraulicsPayloadSchema):
+async def calculate_hydraulics(
+    payload: HydraulicsPayloadSchema,
+    current_user: UserModel = Depends(get_current_user)
+):
     try:
         engine = DrillingHydraulicsEngine(
             surface_mud_weight_ppg=payload.surface_mud_weight_ppg,
@@ -126,9 +121,12 @@ async def calculate_hydraulics(payload: HydraulicsPayloadSchema):
         )
 
 @app.post("/api/v1/hydraulics/export-pdf", tags=["Reports"])
-async def export_pdf_report(payload: HydraulicsPayloadSchema):
+async def export_pdf_report(
+    payload: HydraulicsPayloadSchema,
+    current_user: UserModel = Depends(get_current_user)
+):
     try:
-        calc_response = await calculate_hydraulics(payload)
+        calc_response = await calculate_hydraulics(payload, current_user=current_user)
         physics_results = calc_response["physics_results"]
         diagnostics = calc_response["diagnostics"]
 
@@ -137,7 +135,7 @@ async def export_pdf_report(payload: HydraulicsPayloadSchema):
         pdf_buffer = generate_hydraulics_pdf(
             results=physics_results,
             diagnostic_report=diagnostics,
-            executed_by="PyMudCement Automated Engine",
+            executed_by=f"User: {current_user.email}",
             segments=segments_data,
             pv=payload.plastic_viscosity_cp,
             yp=payload.yield_point_lb_100ft2
@@ -158,4 +156,4 @@ async def export_pdf_report(payload: HydraulicsPayloadSchema):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=False)
+    uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
