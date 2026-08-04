@@ -16,92 +16,53 @@ from physics import DrillingHydraulicsEngine, WellSegment, NozzleInput, Rheology
 from pdf_generator import generate_pdf_payload
 
 # ==============================================================================
-# LOGO SVG DEFINITION (VECTORIZED FROM DESIGN IMAGE)
+# LOGO SVG DEFINITION
 # ==============================================================================
-
 LOGO_SVG = """
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 500 500" width="100%" height="100%">
   <defs>
-    <!-- Dark Blue Metallic Gradient -->
     <linearGradient id="gearGrad" x1="0%" y1="0%" x2="100%" y2="100%">
       <stop offset="0%" stop-color="#1E293B"/>
       <stop offset="50%" stop-color="#0F172A"/>
       <stop offset="100%" stop-color="#050B14"/>
     </linearGradient>
-
-    <!-- Metallic Gold Gradient -->
     <linearGradient id="goldGrad" x1="0%" y1="0%" x2="100%" y2="100%">
       <stop offset="0%" stop-color="#FDE047"/>
       <stop offset="35%" stop-color="#EAB308"/>
       <stop offset="70%" stop-color="#CA8A04"/>
       <stop offset="100%" stop-color="#854D0E"/>
     </linearGradient>
-
-    <!-- Left Blue Drop Gradient -->
     <linearGradient id="blueDropGrad" x1="0%" y1="0%" x2="100%" y2="100%">
       <stop offset="0%" stop-color="#60A5FA"/>
       <stop offset="40%" stop-color="#1D4ED8"/>
       <stop offset="100%" stop-color="#0B2545"/>
     </linearGradient>
-
-    <!-- Right Gold Drop Gradient -->
     <linearGradient id="goldDropGrad" x1="0%" y1="0%" x2="100%" y2="100%">
       <stop offset="0%" stop-color="#FEF08A"/>
       <stop offset="50%" stop-color="#EAB308"/>
       <stop offset="100%" stop-color="#A16207"/>
     </linearGradient>
   </defs>
-
-  <!-- Outer Mechanical Gear Silhouette (12 Teeth) -->
   <path d="M 230 20 H 270 L 275 52 A 195 195 0 0 1 324 65 L 351 45 L 380 74 L 360 101 A 195 195 0 0 1 373 150 L 405 155 V 195 L 373 200 A 195 195 0 0 1 360 249 L 380 276 L 351 305 L 324 285 A 195 195 0 0 1 275 298 L 270 330 H 230 L 225 298 A 195 195 0 0 1 176 285 L 149 305 L 120 276 L 140 249 A 195 195 0 0 1 127 200 L 95 195 V 155 L 127 150 A 195 195 0 0 1 140 101 L 120 74 L 149 45 L 176 65 A 195 195 0 0 1 225 52 Z" 
         fill="url(#gearGrad)" transform="translate(0, 45)"/>
-
   <g transform="translate(0, 45)">
-    <!-- Gold Inner Concentric Border Rings -->
     <circle cx="250" cy="175" r="162" fill="none" stroke="url(#goldGrad)" stroke-width="8"/>
     <circle cx="250" cy="175" r="150" fill="none" stroke="url(#goldGrad)" stroke-width="3"/>
-
-    <!-- Center Background Core -->
     <circle cx="250" cy="175" r="147" fill="#0A111E"/>
-
-    <!-- Left Blue Fluid Drop Segment -->
-    <path d="M 250 40 
-             C 250 40, 160 140, 160 215 
-             A 90 90 0 0 0 250 305 
-             Z" 
-          fill="url(#blueDropGrad)"/>
-
-    <!-- Right Gold Fluid Drop Segment -->
-    <path d="M 250 40 
-             C 250 40, 340 140, 340 215 
-             A 90 90 0 0 1 250 305 
-             Z" 
-          fill="url(#goldDropGrad)"/>
-
-    <!-- Dynamic Drop Highlight Curve -->
-    <path d="M 250 40 C 220 100, 180 160, 185 220" 
-          fill="none" stroke="#93C5FD" stroke-width="4" stroke-linecap="round" opacity="0.6"/>
-
-    <!-- White Offshore Drilling Rig Derrick Structure -->
+    <path d="M 250 40 C 250 40, 160 140, 160 215 A 90 90 0 0 0 250 305 Z" fill="url(#blueDropGrad)"/>
+    <path d="M 250 40 C 250 40, 340 140, 340 215 A 90 90 0 0 1 250 305 Z" fill="url(#goldDropGrad)"/>
+    <path d="M 250 40 C 220 100, 180 160, 185 220" fill="none" stroke="#93C5FD" stroke-width="4" stroke-linecap="round" opacity="0.6"/>
     <g fill="#FFFFFF" stroke="#FFFFFF" stroke-linecap="round" stroke-linejoin="round">
-      <!-- Derrick Outer Frame -->
       <polygon points="250,75 230,245 270,245" fill="none" stroke-width="4.5"/>
-      <!-- Top Crown Block -->
       <rect x="244" y="68" width="12" height="7" rx="1.5"/>
-      <!-- Substructure Base Deck -->
       <path d="M 205 260 L 295 260 L 285 245 L 215 245 Z"/>
       <rect x="220" y="260" width="8" height="20"/>
       <rect x="272" y="260" width="8" height="20"/>
-      <!-- Central Wellhead Pipe -->
       <rect x="246" y="245" width="8" height="40" fill="#FFFFFF"/>
-      
-      <!-- Cross Lattice Bracing -->
       <line x1="246" y1="105" x2="254" y2="105" stroke-width="3"/>
       <line x1="243" y1="130" x2="257" y2="130" stroke-width="3"/>
       <line x1="239" y1="160" x2="261" y2="160" stroke-width="3"/>
       <line x1="235" y1="195" x2="265" y2="195" stroke-width="3.5"/>
-      
-      <!-- X-Bracing Elements -->
       <line x1="246" y1="105" x2="257" y2="130" stroke-width="2.5"/>
       <line x1="254" y1="105" x2="243" y2="130" stroke-width="2.5"/>
       <line x1="243" y1="130" x2="261" y2="160" stroke-width="2.5"/>
@@ -110,8 +71,6 @@ LOGO_SVG = """
       <line x1="261" y1="160" x2="235" y2="195" stroke-width="2.5"/>
       <line x1="235" y1="195" x2="270" y2="245" stroke-width="3"/>
       <line x1="265" y1="195" x2="230" y2="245" stroke-width="3"/>
-      
-      <!-- Seabed Curved Base Line -->
       <path d="M 175 275 Q 250 240 325 275" fill="none" stroke-width="4"/>
     </g>
   </g>
@@ -119,14 +78,13 @@ LOGO_SVG = """
 """
 
 def render_svg(svg_string: str, width: int = 50):
-    """Encodes SVG string to base64 for seamless Streamlit integration."""
     b64 = base64.b64encode(svg_string.encode('utf-8')).decode("utf-8")
     return f'<img src="data:image/svg+xml;base64,{b64}" width="{width}px"/>'
+
 
 # ==============================================================================
 # CONFIGURATION & CONSTANTS
 # ==============================================================================
-
 CONFIG = {
     "DEFAULT_TOTAL_DEPTH": 10000.0,
     "DEFAULT_FLOW_RATE": 550.0,
@@ -139,12 +97,11 @@ CONFIG = {
     "DEFAULT_COMPANY": "Enterprise Hydrocarbons Corp"
 }
 
+
 # ==============================================================================
 # SAFE ASYNC RUNNER FOR STREAMLIT
 # ==============================================================================
-
 def run_async(coro):
-    """Executes async coroutines safely within Streamlit's execution thread."""
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
@@ -152,16 +109,15 @@ def run_async(coro):
         asyncio.set_event_loop(loop)
     return loop.run_until_complete(coro)
 
-# Initialize DB safely on boot
 try:
     run_async(init_db())
 except SQLAlchemyError as e:
     st.error(f"Database Initialization Failed: {str(e)}")
 
+
 # ==============================================================================
 # APP LAYOUT & THEME
 # ==============================================================================
-
 st.set_page_config(
     page_title="PyMudCement Optima Pro",
     page_icon="🛢️",
@@ -231,16 +187,15 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# Session State Setup
 if "authenticated" not in st.session_state:
     st.session_state.authenticated = False
 if "user_info" not in st.session_state:
     st.session_state.user_info = None
 
+
 # ==============================================================================
 # AUTHENTICATION LOGIC
 # ==============================================================================
-
 async def process_authentication(mode: str, username_val: str, password_val: str, email_val: str = None, company_val: str = None) -> Tuple[bool, Any]:
     async with AsyncSessionLocal() as session:
         if mode == "Register Account":
@@ -318,11 +273,10 @@ if not st.session_state.authenticated:
                         st.error(response)
     st.stop()
 
+
 # ==============================================================================
 # MAIN APPLICATION INTERFACE
 # ==============================================================================
-
-# Brand Banner Header
 st.markdown(f"""
 <div class="brand-container">
     {render_svg(LOGO_SVG, 70)}
@@ -365,7 +319,6 @@ tabs = st.tabs(["📊 Hydraulics Matrix", "🎯 3D Trajectory (MCM)", "🤖 Mult
 # ------------------------------------------------------------------------------
 # TAB 1: HYDRAULICS MATRIX
 # ------------------------------------------------------------------------------
-
 with tabs[0]:
     st.subheader("Multi-Segment Wellbore Geometry")
 
@@ -424,7 +377,6 @@ with tabs[0]:
 # ------------------------------------------------------------------------------
 # TAB 2: 3D TRAJECTORY (MINIMUM CURVATURE METHOD)
 # ------------------------------------------------------------------------------
-
 with tabs[1]:
     st.subheader("3D Wellbore Survey Profile (Minimum Curvature Method)")
 
@@ -492,7 +444,6 @@ with tabs[1]:
 # ------------------------------------------------------------------------------
 # TAB 3: MULTI-FACTOR AI DIAGNOSTICS
 # ------------------------------------------------------------------------------
-
 with tabs[2]:
     st.subheader("🤖 Multi-Factor Diagnostic Engine")
 
@@ -549,7 +500,6 @@ with tabs[2]:
 # ------------------------------------------------------------------------------
 # TAB 4: PDF EXPORT
 # ------------------------------------------------------------------------------
-
 with tabs[3]:
     st.subheader("📄 Export Compliance Documentation")
 
