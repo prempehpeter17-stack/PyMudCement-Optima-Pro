@@ -42,10 +42,13 @@ class User(Base):
     hashed_password: Mapped[str] = mapped_column(String(255), nullable=False)
     role: Mapped[str] = mapped_column(String(20), default="drilling_engineer", nullable=False)
     company_name: Mapped[str] = mapped_column(String(100), default="Enterprise Hydrocarbons Corp", index=True, nullable=False)
-    
+
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     email_verified: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
-    
+
+    failed_login_attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    locked_until: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
     password_reset_token: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     password_reset_expiry: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
@@ -60,6 +63,9 @@ class User(Base):
     revoked_tokens: Mapped[List["RevokedToken"]] = relationship(
         "RevokedToken", back_populates="user", cascade="all, delete-orphan", passive_deletes=True
     )
+    refresh_tokens: Mapped[List["RefreshToken"]] = relationship(
+        "RefreshToken", back_populates="user", cascade="all, delete-orphan", passive_deletes=True
+    )
     audit_logs: Mapped[List["AuditLog"]] = relationship(
         "AuditLog", back_populates="user", cascade="all, delete-orphan", passive_deletes=True
     )
@@ -70,6 +76,21 @@ class User(Base):
         if not address or not re.match(email_regex, address):
             raise ValueError(f"Invalid email address provided: {address}")
         return address
+
+# ==============================================================================
+# REFRESH TOKEN MODEL
+# ==============================================================================
+
+class RefreshToken(Base):
+    __tablename__ = "refresh_tokens"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    jti: Mapped[str] = mapped_column(String(36), unique=True, index=True, nullable=False)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    revoked: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
+    user: Mapped["User"] = relationship("User", back_populates="refresh_tokens")
 
 # ==============================================================================
 # REVOKED TOKEN MODEL
@@ -116,7 +137,7 @@ class Project(Base):
     field_name: Mapped[str] = mapped_column(String(100), index=True, nullable=False, default="Unspecified Field")
     rig_name: Mapped[str] = mapped_column(String(100), nullable=False, default="Unspecified Rig")
     status: Mapped[str] = mapped_column(String(30), index=True, default="Planning", nullable=False)
-    
+
     unit_system: Mapped[str] = mapped_column(String(20), default="Field US", nullable=False)
     mud_weight: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     total_depth: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
