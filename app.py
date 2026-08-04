@@ -16,88 +16,110 @@ from physics import DrillingHydraulicsEngine, WellSegment, NozzleInput, Rheology
 from pdf_generator import generate_pdf_payload
 
 # ==============================================================================
-# LOGO SVG DEFINITION (REFINED v5.1 PRODUCTION VERSION)
+# LOGO SVG DEFINITION (VECTORIZED FROM DESIGN IMAGE)
 # ==============================================================================
 
 LOGO_SVG = """
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="100%" height="100%">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 500 500" width="100%" height="100%">
   <defs>
-    <!-- Background Gradient -->
-    <radialGradient id="bgGrad" cx="50%" cy="50%" r="75%">
+    <!-- Dark Blue Metallic Gradient -->
+    <linearGradient id="gearGrad" x1="0%" y1="0%" x2="100%" y2="100%">
       <stop offset="0%" stop-color="#1E293B"/>
-      <stop offset="100%" stop-color="#0F172A"/>
-    </radialGradient>
-    
-    <!-- Fluid Drop Gradient -->
-    <linearGradient id="fluidGrad" x1="0%" y1="0%" x2="0%" y2="100%">
-      <stop offset="0%" stop-color="#3B82F6"/>
-      <stop offset="100%" stop-color="#1D4ED8"/>
+      <stop offset="50%" stop-color="#0F172A"/>
+      <stop offset="100%" stop-color="#050B14"/>
     </linearGradient>
-    
-    <!-- Energy Gold Gradient -->
+
+    <!-- Metallic Gold Gradient -->
     <linearGradient id="goldGrad" x1="0%" y1="0%" x2="100%" y2="100%">
       <stop offset="0%" stop-color="#FDE047"/>
+      <stop offset="35%" stop-color="#EAB308"/>
+      <stop offset="70%" stop-color="#CA8A04"/>
+      <stop offset="100%" stop-color="#854D0E"/>
+    </linearGradient>
+
+    <!-- Left Blue Drop Gradient -->
+    <linearGradient id="blueDropGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#60A5FA"/>
+      <stop offset="40%" stop-color="#1D4ED8"/>
+      <stop offset="100%" stop-color="#0B2545"/>
+    </linearGradient>
+
+    <!-- Right Gold Drop Gradient -->
+    <linearGradient id="goldDropGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#FEF08A"/>
       <stop offset="50%" stop-color="#EAB308"/>
-      <stop offset="100%" stop-color="#CA8A04"/>
+      <stop offset="100%" stop-color="#A16207"/>
     </linearGradient>
   </defs>
 
-  <!-- Outer Dark Badge Base -->
-  <rect width="512" height="512" rx="100" fill="url(#bgGrad)"/>
-  
-  <!-- Outer Subtle Tech Gear Ring (12 Gear Teeth Pattern) -->
-  <g fill="none" stroke="url(#goldGrad)" stroke-width="4" opacity="0.85">
-    <circle cx="256" cy="256" r="215" stroke-dasharray="14, 8" stroke-width="6"/>
-    <circle cx="256" cy="256" r="195" opacity="0.3"/>
-  </g>
+  <!-- Outer Mechanical Gear Silhouette (12 Teeth) -->
+  <path d="M 230 20 H 270 L 275 52 A 195 195 0 0 1 324 65 L 351 45 L 380 74 L 360 101 A 195 195 0 0 1 373 150 L 405 155 V 195 L 373 200 A 195 195 0 0 1 360 249 L 380 276 L 351 305 L 324 285 A 195 195 0 0 1 275 298 L 270 330 H 230 L 225 298 A 195 195 0 0 1 176 285 L 149 305 L 120 276 L 140 249 A 195 195 0 0 1 127 200 L 95 195 V 155 L 127 150 A 195 195 0 0 1 140 101 L 120 74 L 149 45 L 176 65 A 195 195 0 0 1 225 52 Z" 
+        fill="url(#gearGrad)" transform="translate(0, 45)"/>
 
-  <!-- Digital Grid & Telemetry Circuit Lines -->
-  <g stroke="#38BDF8" stroke-width="2" opacity="0.35" fill="none">
-    <path d="M 120 256 H 200 M 312 256 H 392"/>
-    <path d="M 256 120 V 180 M 256 332 V 392"/>
-    <circle cx="120" cy="256" r="4" fill="#38BDF8"/>
-    <circle cx="392" cy="256" r="4" fill="#38BDF8"/>
-    <circle cx="256" cy="120" r="4" fill="#38BDF8"/>
-    <circle cx="256" cy="392" r="4" fill="#38BDF8"/>
-  </g>
+  <g transform="translate(0, 45)">
+    <!-- Gold Inner Concentric Border Rings -->
+    <circle cx="250" cy="175" r="162" fill="none" stroke="url(#goldGrad)" stroke-width="8"/>
+    <circle cx="250" cy="175" r="150" fill="none" stroke="url(#goldGrad)" stroke-width="3"/>
 
-  <!-- Clean Wellbore Trajectory Path -->
-  <path d="M 256 110 C 256 200, 240 280, 256 390" 
-        fill="none" stroke="#64748B" stroke-width="8" stroke-dasharray="12 6" opacity="0.5"/>
+    <!-- Center Background Core -->
+    <circle cx="250" cy="175" r="147" fill="#0A111E"/>
 
-  <!-- Fluid Droplet Layer -->
-  <path d="M 256 130 
-           C 180 240, 160 310, 160 350 
-           A 96 96 0 0 0 352 350 
-           C 352 310, 332 240, 256 130 Z" 
-        fill="url(#fluidGrad)" opacity="0.92"/>
+    <!-- Left Blue Fluid Drop Segment -->
+    <path d="M 250 40 
+             C 250 40, 160 140, 160 215 
+             A 90 90 0 0 0 250 305 
+             Z" 
+          fill="url(#blueDropGrad)"/>
 
-  <!-- Highlight Reflection on Fluid Drop -->
-  <path d="M 220 200 C 200 240, 190 280, 192 320" 
-        fill="none" stroke="#93C5FD" stroke-width="6" stroke-linecap="round" opacity="0.6"/>
+    <!-- Right Gold Fluid Drop Segment -->
+    <path d="M 250 40 
+             C 250 40, 340 140, 340 215 
+             A 90 90 0 0 1 250 305 
+             Z" 
+          fill="url(#goldDropGrad)"/>
 
-  <!-- Streamlined Drill Bit Symbol (Cleaned 20% internal detail for scale) -->
-  <g transform="translate(0, 20)">
-    <!-- Main Bit Body Sleeve -->
-    <path d="M 226 270 L 286 270 L 276 330 L 236 330 Z" fill="url(#goldGrad)"/>
-    
-    <!-- Central Flow Channel -->
-    <rect x="250" y="270" width="12" height="60" fill="#0F172A" opacity="0.8"/>
-    
-    <!-- Optimized Cutter Blades -->
-    <path d="M 216 330 L 241 330 L 236 350 L 221 350 Z" fill="url(#goldGrad)"/>
-    <path d="M 243 330 L 269 330 L 261 356 L 251 356 Z" fill="url(#goldGrad)"/>
-    <path d="M 271 330 L 296 330 L 291 350 L 276 350 Z" fill="url(#goldGrad)"/>
-    
-    <!-- Bit Nozzle Ejection Indicators -->
-    <circle cx="231" cy="340" r="2.5" fill="#0F172A"/>
-    <circle cx="281" cy="340" r="2.5" fill="#0F172A"/>
+    <!-- Dynamic Drop Highlight Curve -->
+    <path d="M 250 40 C 220 100, 180 160, 185 220" 
+          fill="none" stroke="#93C5FD" stroke-width="4" stroke-linecap="round" opacity="0.6"/>
+
+    <!-- White Offshore Drilling Rig Derrick Structure -->
+    <g fill="#FFFFFF" stroke="#FFFFFF" stroke-linecap="round" stroke-linejoin="round">
+      <!-- Derrick Outer Frame -->
+      <polygon points="250,75 230,245 270,245" fill="none" stroke-width="4.5"/>
+      <!-- Top Crown Block -->
+      <rect x="244" y="68" width="12" height="7" rx="1.5"/>
+      <!-- Substructure Base Deck -->
+      <path d="M 205 260 L 295 260 L 285 245 L 215 245 Z"/>
+      <rect x="220" y="260" width="8" height="20"/>
+      <rect x="272" y="260" width="8" height="20"/>
+      <!-- Central Wellhead Pipe -->
+      <rect x="246" y="245" width="8" height="40" fill="#FFFFFF"/>
+      
+      <!-- Cross Lattice Bracing -->
+      <line x1="246" y1="105" x2="254" y2="105" stroke-width="3"/>
+      <line x1="243" y1="130" x2="257" y2="130" stroke-width="3"/>
+      <line x1="239" y1="160" x2="261" y2="160" stroke-width="3"/>
+      <line x1="235" y1="195" x2="265" y2="195" stroke-width="3.5"/>
+      
+      <!-- X-Bracing Elements -->
+      <line x1="246" y1="105" x2="257" y2="130" stroke-width="2.5"/>
+      <line x1="254" y1="105" x2="243" y2="130" stroke-width="2.5"/>
+      <line x1="243" y1="130" x2="261" y2="160" stroke-width="2.5"/>
+      <line x1="257" y1="130" x2="239" y2="160" stroke-width="2.5"/>
+      <line x1="239" y1="160" x2="265" y2="195" stroke-width="2.5"/>
+      <line x1="261" y1="160" x2="235" y2="195" stroke-width="2.5"/>
+      <line x1="235" y1="195" x2="270" y2="245" stroke-width="3"/>
+      <line x1="265" y1="195" x2="230" y2="245" stroke-width="3"/>
+      
+      <!-- Seabed Curved Base Line -->
+      <path d="M 175 275 Q 250 240 325 275" fill="none" stroke-width="4"/>
+    </g>
   </g>
 </svg>
 """
 
-def render_svg(svg_string: str, width: int = 40):
-    """Encodes SVG string to base64 string for clean Streamlit rendering."""
+def render_svg(svg_string: str, width: int = 50):
+    """Encodes SVG string to base64 for seamless Streamlit integration."""
     b64 = base64.b64encode(svg_string.encode('utf-8')).decode("utf-8")
     return f'<img src="data:image/svg+xml;base64,{b64}" width="{width}px"/>'
 
@@ -141,7 +163,7 @@ except SQLAlchemyError as e:
 # ==============================================================================
 
 st.set_page_config(
-    page_title="PyMudCement Optima Pro v5.1",
+    page_title="PyMudCement Optima Pro",
     page_icon="🛢️",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -152,22 +174,32 @@ st.markdown("""
     .brand-container {
         display: flex;
         align-items: center;
-        gap: 16px;
-        margin-bottom: 5px;
+        gap: 18px;
+        margin-bottom: 10px;
     }
-    .main-header { 
-        font-size: 2.2rem; 
-        font-weight: 800; 
-        color: #0F172A; 
+    .brand-title {
+        font-size: 2.2rem;
+        font-weight: 800;
+        font-family: 'Segoe UI', Roboto, sans-serif;
         line-height: 1.1;
-    } 
-    .sub-header { 
-        font-size: 0.95rem; 
-        color: #CA8A04; 
-        font-weight: 700; 
-        margin-bottom: 25px; 
-        letter-spacing: 0.5px;
-    } 
+        margin: 0;
+    }
+    .brand-title-blue { color: #0047AB; }
+    .brand-title-gold { color: #D4AF37; }
+    .brand-subtitle {
+        font-size: 0.9rem;
+        color: #CA8A04;
+        font-weight: 700;
+        letter-spacing: 2.5px;
+        margin-top: 2px;
+    }
+    .brand-tagline {
+        font-size: 0.72rem;
+        color: #0F172A;
+        font-weight: 600;
+        letter-spacing: 3px;
+        margin-top: 1px;
+    }
     .card { 
         background-color: #FFFFFF; 
         border-radius: 8px; 
@@ -248,10 +280,13 @@ async def process_authentication(mode: str, username_val: str, password_val: str
 if not st.session_state.authenticated:
     st.markdown(f"""
     <div class="brand-container">
-        {render_svg(LOGO_SVG, 64)}
+        {render_svg(LOGO_SVG, 85)}
         <div>
-            <div class="main-header">PyMudCement Optima Pro v5.1</div>
-            <div class="sub-header">AI-POWERED DRILLING HYDRAULICS SOFTWARE PLATFORM</div>
+            <div class="brand-title">
+                <span class="brand-title-blue">PyMud</span><span class="brand-title-gold">Cement</span>
+            </div>
+            <div class="brand-subtitle">— OPTIMA PRO —</div>
+            <div class="brand-tagline">ENGINEERED FOR DRILLING EXCELLENCE</div>
         </div>
     </div>
     """, unsafe_allow_html=True)
@@ -290,10 +325,13 @@ if not st.session_state.authenticated:
 # Brand Banner Header
 st.markdown(f"""
 <div class="brand-container">
-    {render_svg(LOGO_SVG, 52)}
+    {render_svg(LOGO_SVG, 70)}
     <div>
-        <div class="main-header">PyMudCement Optima Pro v5.1</div>
-        <div class="sub-header">ENTERPRISE DRILLING HYDRAULICS & DIAGNOSTICS</div>
+        <div class="brand-title">
+            <span class="brand-title-blue">PyMud</span><span class="brand-title-gold">Cement</span>
+        </div>
+        <div class="brand-subtitle">— OPTIMA PRO —</div>
+        <div class="brand-tagline">ENGINEERED FOR DRILLING EXCELLENCE</div>
     </div>
 </div>
 """, unsafe_allow_html=True)
@@ -304,7 +342,7 @@ st.divider()
 with st.sidebar:
     st.markdown(f"""
     <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 15px;">
-        {render_svg(LOGO_SVG, 36)}
+        {render_svg(LOGO_SVG, 42)}
         <span style="font-weight: 700; font-size: 1.1rem; color: #0F172A;">Optima Controls</span>
     </div>
     """, unsafe_allow_html=True)
@@ -423,7 +461,7 @@ with tabs[1]:
             
             dz = (d1 / 2) * (np.cos(i1) + np.cos(i2)) * rf
             dx = (d1 / 2) * (np.sin(i1) * np.sin(a1) + np.sin(i2) * np.sin(a2)) * rf
-            dy = (d1 / 2) * (np.sin(i1) * np.cos(a1) + np.sin(i2) * np.cos(a2)) * rf
+            dy = (d1 / 2) * (np.sin(i1) * opacity=1.0 * np.cos(a1) + np.sin(i2) * np.cos(a2)) * rf
             
             z[i] = z[i-1] - dz
             x[i] = x[i-1] + dx
