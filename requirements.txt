@@ -16,8 +16,13 @@ plotly
 streamlit
 pydantic
 email-validator
-streamlit
 pydantic
 svglib
 reportlab
+pydantic
+svglib
+reportlab
+passlib[bcrypt]
+bcrypt==4.0.1
+
 
