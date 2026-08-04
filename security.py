@@ -1,18 +1,21 @@
 import os
 import uuid
+import logging
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Any, Tuple, List
 
+import bcrypt
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
-from passlib.context import CryptContext
 from pydantic import BaseModel, EmailStr, ValidationError
 from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
-# Updated direct imports from local modules
+# Direct imports from local modules
 from database import AsyncSessionLocal, User, RevokedToken, RefreshToken
+
+logger = logging.getLogger(__name__)
 
 # ==============================================================================
 # ENVIRONMENT & SECRET ROTATION CONFIGURATION
@@ -37,13 +40,6 @@ REFRESH_TOKEN_EXPIRE_DAYS = 7
 
 MAX_FAILED_ATTEMPTS = 5
 LOCKOUT_MINUTES = 15
-
-# Delegate truncation handling directly to Passlib/Bcrypt engine
-pwd_context = CryptContext(
-    schemes=["bcrypt"],
-    bcrypt__truncate_error=False,
-    deprecated="auto"
-)
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login")
 
@@ -81,20 +77,32 @@ class RefreshTokenPayload(BaseModel):
     exp: datetime
 
 # ==============================================================================
-# PASSWORD UTILITIES (NATIVE PASSLIB TRUNCATION)
+# PASSWORD UTILITIES (DIRECT BCRYPT IMPLEMENTATION)
 # ==============================================================================
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
-    """Verifies plain text password against stored hash natively."""
+    """Verifies plain text password against stored hash natively using bcrypt."""
+    if not plain_password or not hashed_password:
+        return False
     try:
-        return pwd_context.verify(plain_password, hashed_password)
-    except Exception:
+        # Convert strings to UTF-8 bytes for bcrypt evaluation
+        plain_bytes = plain_password.encode('utf-8')
+        hashed_bytes = hashed_password.encode('utf-8')
+        return bcrypt.checkpw(plain_bytes, hashed_bytes)
+    except Exception as e:
+        logger.warning(f"Password verification encountered an exception: {e}")
         return False
 
 
 def get_password_hash(password: str) -> str:
-    """Generates bcrypt hash natively using configured truncation settings."""
-    return pwd_context.hash(password)
+    """Generates a secure bcrypt hash using native library functions."""
+    if not password:
+        raise ValueError("Password string cannot be empty.")
+    
+    password_bytes = password.encode('utf-8')
+    salt = bcrypt.gensalt()
+    hashed_bytes = bcrypt.hashpw(password_bytes, salt)
+    return hashed_bytes.decode('utf-8')
 
 # ==============================================================================
 # JWT ISSUANCE & DECODING
