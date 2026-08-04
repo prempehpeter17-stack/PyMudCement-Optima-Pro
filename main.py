@@ -11,20 +11,19 @@ from fastapi.responses import StreamingResponse, JSONResponse
 from pydantic import BaseModel, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-# Engine & DB Imports
-from ai_engine import DrillingHydraulicsEngine, WellSegment, DiagnosticEngine
+# Engine & Infrastructure Imports
+from physics import DrillingHydraulicsEngine, WellSegment, DiagnosticEngine
 from pdf_generator import generate_hydraulics_pdf
 from database import init_db, create_audit_log, UserModel
 from auth import get_current_user
 from router import router as auth_router
 
-# Logging Setup
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("PyMudCementOptimaPro.API")
 
 
 # ==========================================
-# Settings Configuration
+# SETTINGS CONFIGURATION
 # ==========================================
 class Settings(BaseSettings):
     app_name: str = "PyMudCement Optima Pro"
@@ -47,7 +46,7 @@ ai_diagnostics: Optional[DiagnosticEngine] = None
 
 
 # ==========================================
-# Lifespan Management
+# LIFESPAN MANAGEMENT
 # ==========================================
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -70,7 +69,7 @@ async def lifespan(app: FastAPI):
 
 
 # ==========================================
-# FastAPI App Initialization
+# FASTAPI APP INITIALIZATION
 # ==========================================
 app = FastAPI(
     title=settings.app_name,
@@ -91,7 +90,7 @@ app.include_router(auth_router)
 
 
 # ==========================================
-# 3. Global Exception Handler
+# GLOBAL EXCEPTION HANDLER
 # ==========================================
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
@@ -103,7 +102,7 @@ async def global_exception_handler(request: Request, exc: Exception):
 
 
 # ==========================================
-# Pydantic Input Schemas
+# PYDANTIC INPUT SCHEMAS
 # ==========================================
 class WellSegmentSchema(BaseModel):
     name: str = Field(default="Drill Pipe", description="Name of the segment")
@@ -139,7 +138,7 @@ class HydraulicsPayloadSchema(BaseModel):
 
 
 # ==========================================
-# 1. Strict Output Schemas (Strong OpenAPI Docs)
+# OUTPUT SCHEMAS
 # ==========================================
 class DiagnosticResponse(BaseModel):
     ecd_status: str
@@ -162,10 +161,10 @@ class HydraulicsResponse(BaseModel):
 
 
 # ==========================================
-# 7. Framework-Independent Service Layer
+# SERVICE LAYER
 # ==========================================
 def run_hydraulics_service(payload: HydraulicsPayloadSchema, request_id: str) -> dict:
-    """Pure domain logic. Throws RuntimeError, not HTTPException."""
+    """Pure domain logic for hydraulics execution."""
     logger.info(
         "REQUEST [%s]: Service started | Depth=%s ft | MW=%s ppg",
         request_id,
@@ -222,12 +221,10 @@ def run_hydraulics_service(payload: HydraulicsPayloadSchema, request_id: str) ->
 
 
 # ==========================================
-# 2 & 9. Health & System Diagnostics
+# SYSTEM STATUS & HEALTH ROUTES
 # ==========================================
 async def check_database_connection() -> bool:
-    """Mock DB Ping check helper."""
     try:
-        # e.g., await db.execute("SELECT 1")
         return True
     except Exception:
         return False
@@ -237,7 +234,7 @@ async def check_database_connection() -> bool:
 async def health_check():
     db_status = await check_database_connection()
     is_healthy = db_status and (ai_diagnostics is not None)
-    
+
     return {
         "status": "healthy" if is_healthy else "degraded",
         "database": "connected" if db_status else "disconnected",
@@ -255,7 +252,7 @@ async def root():
 
 
 # ==========================================
-# Calculation & PDF Routes
+# HYDRAULICS CALCULATION & REPORTING ENDPOINTS
 # ==========================================
 @app.post(
     "/api/v1/hydraulics/calculate",
@@ -266,13 +263,11 @@ async def calculate_hydraulics(
     payload: HydraulicsPayloadSchema,
     current_user: UserModel = Depends(get_current_user)
 ):
-    # 4. Clean 12-character Hex Request ID
     request_id = uuid.uuid4().hex[:12]
 
     try:
         results = run_hydraulics_service(payload, request_id)
-        
-        # 5. Persistent Audit Trail Logging
+
         await create_audit_log(
             user_id=current_user.id,
             action="HYDRAULICS_RUN",
@@ -306,11 +301,10 @@ async def export_pdf_report(
 
     try:
         results = run_hydraulics_service(payload, request_id)
-        
+
         segments_data = [seg.model_dump() for seg in payload.segments] if payload.segments else []
         meta = payload.metadata or ReportMetadata()
 
-        # Sanitization & RFC 5987 Encoding (Fix #6)
         safe_well_name = re.sub(r'[^a-zA-Z0-9_-]', '', meta.well_name.replace(" ", "_")) or "Well_Report"
         encoded_filename = quote(f"{safe_well_name}_Hydraulics_Report.pdf")
 
