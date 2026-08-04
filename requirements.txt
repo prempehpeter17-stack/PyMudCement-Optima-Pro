@@ -16,3 +16,8 @@ plotly
 streamlit
 pydantic
 email-validator
+streamlit
+pydantic
+svglib
+reportlab
+
