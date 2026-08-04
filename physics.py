@@ -80,7 +80,7 @@ class SegmentCalculationResult(TypedDict):
 
 
 # ==============================================================================
-# FANN VISCOMETER DIAL READER MODULE (NEW INDUSTRIAL FEATURE)
+# FANN VISCOMETER DIAL READER MODULE
 # ==============================================================================
 class ViscometerReadings(BaseModel):
     r600: float = Field(..., gt=0, description="Dial reading at 600 RPM")
@@ -117,14 +117,14 @@ class ViscometerReader:
         """Calculates Yield Stress (tau_0), n_index, and K_consistency."""
         r3 = readings.r3 if readings.r3 is not None else max(1.0, readings.r300 * 0.05)
         tau_0 = max(0.0, (2.0 * r3) - readings.r6) if readings.r6 is not None else max(0.0, r3)
-        
+
         r600_adj = max(1.0, readings.r600 - tau_0)
         r300_adj = max(1.0, readings.r300 - tau_0)
-        
+
         n_hb = 3.32 * math.log10(r600_adj / r300_adj)
         n_hb = min(1.0, max(0.1, n_hb))
         k_hb = (511.0 * r300_adj) / (511.0 ** n_hb)
-        
+
         return {
             "tau_0_lb_100ft2": round(tau_0, 2),
             "n_index": round(n_hb, 4),
@@ -145,18 +145,18 @@ class WellSegment(BaseModel):
     inclination_deg: float = Field(default=0.0, ge=0.0, le=90.0, description="Average inclination angle")
     tvd_start_ft: float = Field(default=0.0, ge=0.0, description="TVD at start of segment")
     tvd_end_ft: float = Field(default=0.0, ge=0.0, description="TVD at end of segment")
-    
+
     pipe_od_in: float = Field(..., gt=0, description="Outer diameter of pipe in inches")
     pipe_id_in: float = Field(..., gt=0, description="Inner diameter of pipe in inches")
     hole_id_in: float = Field(..., gt=0, description="Hole size or casing ID in inches")
-    
+
     mud_weight_ppg: float = Field(..., gt=0, description="Base fluid density in ppg")
     viscosity_cp: float = Field(default=20.0, ge=0, description="Plastic Viscosity or Newtonian Viscosity (cP)")
     yield_point_lb_100ft2: float = Field(default=15.0, ge=0, description="Yield Point (lb/100ft²)")
     tau_0_lb_100ft2: float = Field(default=5.0, ge=0, description="Yield stress for Herschel-Bulkley")
     n_index: float = Field(default=0.65, gt=0, le=1.0, description="Flow behavior index (n)")
     k_consistency: float = Field(default=300.0, gt=0, description="Consistency index")
-    
+
     pipe_roughness_in: float = Field(default=0.0018, ge=0, description="Absolute commercial steel roughness (in)")
 
 
@@ -189,7 +189,7 @@ class EngineeringValidator:
         nozzles: List[NozzleInput]
     ) -> List[str]:
         warnings = []
-        
+
         if not (6.0 <= surface_mw_ppg <= 25.0):
             warnings.append(f"Surface mud weight ({surface_mw_ppg} ppg) is outside realistic limits (6-25 ppg).")
 
@@ -245,8 +245,9 @@ class FluidMechanicsCore:
         if dh_in <= 0 or v_fpm <= 0:
             return 0.0
         v_fps = v_fpm / 60.0
-        kp = k * ((2.0 * n + 1.0) / (3.0 * n)) ** n
-        re_gen = (12.0 ** n) * (v_fps ** (2.0 - n)) * (dh_in ** n) * (density_ppg * config.hydrostatic_factor) / (kp * 0.0208)
+        n_safe = max(0.01, n)
+        kp = k * ((2.0 * n_safe + 1.0) / (3.0 * n_safe)) ** n_safe
+        re_gen = (12.0 ** n_safe) * (v_fps ** (2.0 - n_safe)) * (dh_in ** n_safe) * (density_ppg * config.hydrostatic_factor) / max(1e-6, kp * 0.0208)
         return max(1.0, re_gen)
 
     @staticmethod
@@ -261,8 +262,9 @@ class FluidMechanicsCore:
         if d_in <= 0 or v_fpm <= 0:
             return 0.0
         v_fps = v_fpm / 60.0
-        kp = k * ((3.0 * n + 1.0) / (4.0 * n)) ** n
-        re_gen = (8.0 ** (n - 1.0)) * (density_ppg * config.hydrostatic_factor) * (v_fps ** (2.0 - n)) * (d_in ** n) / (kp * 0.0208)
+        n_safe = max(0.01, n)
+        kp = k * ((3.0 * n_safe + 1.0) / (4.0 * n_safe)) ** n_safe
+        re_gen = (8.0 ** (n_safe - 1.0)) * (density_ppg * config.hydrostatic_factor) * (v_fps ** (2.0 - n_safe)) * (d_in ** n_safe) / max(1e-6, kp * 0.0208)
         return max(1.0, re_gen)
 
     @staticmethod
@@ -276,20 +278,23 @@ class FluidMechanicsCore:
     @staticmethod
     def solve_colebrook_fanning_friction(reynolds: float, relative_roughness: float) -> float:
         if reynolds < 2100.0:
-            return 16.0 / reynolds
+            return 16.0 / max(1.0, reynolds)
 
         f = 0.0055 * (1.0 + (20000.0 * relative_roughness + 10.0**6 / reynolds) ** (1.0 / 3.0))
         for _ in range(20):
             if f <= 0:
                 f = 0.001
-            fn = -2.0 * math.log10((relative_roughness / 3.7) + (2.51 / (reynolds * math.sqrt(f))))
-            lhs = 1.0 / math.sqrt(f)
-            diff = lhs - fn
-            if abs(diff) < 1e-6:
+            try:
+                fn = -2.0 * math.log10(max(1e-8, (relative_roughness / 3.7) + (2.51 / (reynolds * math.sqrt(f)))))
+                lhs = 1.0 / math.sqrt(f)
+                diff = lhs - fn
+                if abs(diff) < 1e-6:
+                    break
+                f -= diff * (-0.5 * (f ** -1.5))
+            except (ValueError, ZeroDivisionError):
                 break
-            f -= diff * (-0.5 * (f ** -1.5))
 
-        return f / 4.0
+        return max(0.001, f / 4.0)
 
     @staticmethod
     def calculate_fanning_friction_factor(
@@ -302,14 +307,14 @@ class FluidMechanicsCore:
         rel_roughness = roughness_in / max(0.001, d_in)
 
         if regime == FlowRegime.LAMINAR:
-            fanning_f = 16.0 / reynolds
+            fanning_f = 16.0 / max(1.0, reynolds)
         elif regime == FlowRegime.TRANSITION:
             f_lam = 16.0 / 2100.0
             f_turb = FluidMechanicsCore.solve_colebrook_fanning_friction(3000.0, rel_roughness)
             w = (reynolds - 2100.0) / (3000.0 - 2100.0)
             fanning_f = f_lam + w * (f_turb - f_lam)
         else:
-            fanning_f = FluidMechanicsCore.solve_colebrook_fanning_friction(reynolds, rel_roughness) / (n ** 0.15)
+            fanning_f = FluidMechanicsCore.solve_colebrook_fanning_friction(reynolds, rel_roughness) / (max(0.1, n) ** 0.15)
 
         return fanning_f, regime
 
@@ -333,14 +338,14 @@ class CuttingsTransportEngine:
         v_slip_fps = 0.082 * (max(0.1, density_diff) ** 0.667) * (particle_diameter_ft ** 0.4) / (
             (seg.mud_weight_ppg ** 0.333) * ((temp_viscosity_cp / 1000.0) ** 0.333)
         ) if density_diff > 0 else 0.0
-        
+
         v_slip_fpm = v_slip_fps * 60.0
 
         inclination_rad = math.radians(seg.inclination_deg)
         angle_penalty = 1.0 + (0.5 * math.sin(inclination_rad))
         eccentricity_penalty = 1.0 + (0.3 * cuttings.annular_eccentricity)
         rotation_lift_fpm = (cuttings.pipe_rotation_rpm * seg.pipe_od_in / 12.0) * 0.1
-        
+
         adjusted_slip_fpm = max(0.0, (v_slip_fpm * angle_penalty * eccentricity_penalty) - rotation_lift_fpm)
 
         net_transport_velocity = v_ann_fpm - adjusted_slip_fpm
@@ -349,7 +354,12 @@ class CuttingsTransportEngine:
         ann_area_sq_ft = (calculate_cross_sectional_area(seg.hole_id_in) - calculate_cross_sectional_area(seg.pipe_od_in)) / 144.0
         gen_rate_cuft_min = (calculate_cross_sectional_area(seg.hole_id_in) / 144.0) * (cuttings.rop_ft_hr / 60.0)
 
-        cuttings_concentration = (gen_rate_cuft_min / (ann_area_sq_ft * net_transport_velocity)) if net_transport_velocity > 0 and ann_area_sq_ft > 0 else 0.15
+        if net_transport_velocity > 0 and ann_area_sq_ft > 0:
+            cuttings_concentration = gen_rate_cuft_min / (ann_area_sq_ft * net_transport_velocity)
+        else:
+            cuttings_concentration = 0.15
+
+        cuttings_concentration = min(0.5, max(0.0, cuttings_concentration))
 
         effective_mix_density_ppg = (seg.mud_weight_ppg * (1.0 - cuttings_concentration)) + (
             cuttings.cuttings_density_ppg * cuttings_concentration
@@ -364,7 +374,7 @@ class CuttingsTransportEngine:
 
 
 # ==============================================================================
-# MAIN ADVANCED HYDRAULICS ENGINE
+# MAIN HYDRAULICS ENGINE
 # ==============================================================================
 class AdvancedDrillingHydraulicsEngine:
     """Industrial Drilling Hydraulics Simulator with API RP 13D Physics Engine."""
@@ -558,7 +568,7 @@ class AdvancedDrillingHydraulicsEngine:
                 0.01, calculate_cross_sectional_area(seg.hole_id_in) - calculate_cross_sectional_area(seg.pipe_od_in)
             )
             dp_dl_ann, _ = self.calculate_annular_loss_api(seg, v_ann, seg.viscosity_cp)
-            
+
             cum_md += seg.length_ft
             cum_tvd += (seg.tvd_end_ft - seg.tvd_start_ft)
             cum_ann_dp += dp_dl_ann * seg.length_ft
@@ -612,6 +622,13 @@ class AdvancedDrillingHydraulicsEngine:
 
 
 # ==============================================================================
+# BACKWARD COMPATIBILITY ALIAS
+# Allows `from physics import DrillingHydraulicsEngine` in app.py without errors
+# ==============================================================================
+DrillingHydraulicsEngine = AdvancedDrillingHydraulicsEngine
+
+
+# ==============================================================================
 # STATE-SAFE HYDRAULICS OPTIMIZER
 # ==============================================================================
 class HydraulicsOptimizer:
@@ -630,7 +647,7 @@ class HydraulicsOptimizer:
             test_nozzles = [NozzleInput(size_in_32nds=nozzle_size) for _ in range(3)]
             cloned_engine.nozzles = test_nozzles
             results = cloned_engine.solve()
-            
+
             ratio = results["bit_hydraulics"]["bit_pressure_ratio_pct"] / 100.0
             error = abs(ratio - target_bit_pressure_ratio)
 
@@ -643,7 +660,7 @@ class HydraulicsOptimizer:
 
 
 # ==============================================================================
-# INDUSTRIAL REST API BACKEND WRAPPER (NEW COMMERCIAL FEATURE)
+# INDUSTRIAL REST API BACKEND WRAPPER
 # ==============================================================================
 class HydraulicsRequest(BaseModel):
     surface_mud_weight_ppg: float
@@ -664,7 +681,7 @@ def create_fastapi_app():
     """
     try:
         from fastapi import FastAPI, HTTPException
-        
+
         app = FastAPI(
             title="Drilling Hydraulics API Engine",
             version="2.0.0",
@@ -682,8 +699,7 @@ def create_fastapi_app():
                     rheology_model=request.rheology_model,
                     bit_diameter_in=request.bit_diameter_in
                 )
-                
-                # Fit rheology parameters if dial readings provided
+
                 if request.viscometer_readings:
                     bingham = ViscometerReader.fit_bingham_plastic(request.viscometer_readings)
                     for seg in request.segments:
