@@ -7,7 +7,6 @@ from dataclasses import dataclass
 from typing import List, Dict, Any, Optional, Tuple, TypedDict
 from pydantic import BaseModel, Field
 
-# Logger configuration
 logger = logging.getLogger("PyMudCementOptimaPro.IndustrialEngine")
 
 
@@ -383,11 +382,14 @@ class AdvancedDrillingHydraulicsEngine:
         self,
         surface_mud_weight_ppg: float,
         flow_rate_gpm: float,
-        total_md_ft: float,
-        total_tvd_ft: float,
+        total_depth_ft: float = 10000.0,
+        total_md_ft: Optional[float] = None,
+        total_tvd_ft: Optional[float] = None,
         surface_temp_f: float = 70.0,
         bottomhole_temp_f: float = 180.0,
         rheology_model: RheologyModel = RheologyModel.BINGHAM_PLASTIC,
+        plastic_viscosity_cp: float = 20.0,
+        yield_point_lb_100ft2: float = 15.0,
         surface_loss_psi: float = 50.0,
         bit_diameter_in: Optional[float] = None,
         cuttings_parameters: Optional[CuttingsParameters] = None,
@@ -396,11 +398,13 @@ class AdvancedDrillingHydraulicsEngine:
     ):
         self.surface_mud_weight_ppg = max(0.1, surface_mud_weight_ppg)
         self.flow_rate_gpm = max(0.1, flow_rate_gpm)
-        self.total_md_ft = max(1.0, total_md_ft)
-        self.total_tvd_ft = max(1.0, total_tvd_ft)
+        self.total_md_ft = max(1.0, total_md_ft if total_md_ft is not None else total_depth_ft)
+        self.total_tvd_ft = max(1.0, total_tvd_ft if total_tvd_ft is not None else self.total_md_ft)
         self.surface_temp_f = surface_temp_f
         self.bottomhole_temp_f = bottomhole_temp_f
         self.rheology_model = rheology_model
+        self.plastic_viscosity_cp = plastic_viscosity_cp
+        self.yield_point_lb_100ft2 = yield_point_lb_100ft2
         self.surface_loss_psi = max(0.0, surface_loss_psi)
         self.bit_diameter_in = bit_diameter_in
         self.config = config
@@ -520,7 +524,7 @@ class AdvancedDrillingHydraulicsEngine:
             )
 
             local_ecd = hole_cleaning["effective_mixture_density_ppg"] + (
-                total_annular_dp / (self.config.hydrostatic_factor * max(1.0, cumulative_tvd))
+                total_annular_dp / (self.config.hydrostatic_factor * max(1.0, cumulative_tvd if cumulative_tvd > 0 else self.total_tvd_ft))
             )
 
             segment_results.append({
@@ -536,55 +540,6 @@ class AdvancedDrillingHydraulicsEngine:
             })
 
         return total_annular_dp, total_pipe_dp, segment_results
-
-    def calculate_surge_and_swab(self, trip_speed_ft_min: float = 60.0) -> Dict[str, float]:
-        if not self.segments:
-            return {"surge_pressure_psi": 0.0, "swab_pressure_psi": 0.0, "surge_ecd_ppg": 0.0, "swab_ecd_ppg": 0.0}
-
-        total_surge_psi = 0.0
-        for seg in self.segments:
-            v_ann_trip = (self.config.velocity_constant * (trip_speed_ft_min * 0.1)) / max(
-                0.01, calculate_cross_sectional_area(seg.hole_id_in) - calculate_cross_sectional_area(seg.pipe_od_in)
-            )
-            dp_dl_surge, _ = self.calculate_annular_loss_api(seg, v_ann_trip, seg.viscosity_cp)
-            total_surge_psi += dp_dl_surge * seg.length_ft
-
-        surge_ecd = self.surface_mud_weight_ppg + (total_surge_psi / (self.config.hydrostatic_factor * self.total_tvd_ft))
-        swab_ecd = max(0.0, self.surface_mud_weight_ppg - (total_surge_psi / (self.config.hydrostatic_factor * self.total_tvd_ft)))
-
-        return {
-            "surge_pressure_psi": round(total_surge_psi, 2),
-            "swab_pressure_psi": round(total_surge_psi, 2),
-            "surge_ecd_ppg": round(surge_ecd, 3),
-            "swab_ecd_ppg": round(swab_ecd, 3)
-        }
-
-    def generate_pressure_profile(self) -> List[Dict[str, float]]:
-        profile = []
-        cum_md, cum_tvd, cum_ann_dp = 0.0, 0.0, 0.0
-
-        for seg in self.segments:
-            v_ann = (self.config.velocity_constant * self.flow_rate_gpm) / max(
-                0.01, calculate_cross_sectional_area(seg.hole_id_in) - calculate_cross_sectional_area(seg.pipe_od_in)
-            )
-            dp_dl_ann, _ = self.calculate_annular_loss_api(seg, v_ann, seg.viscosity_cp)
-
-            cum_md += seg.length_ft
-            cum_tvd += (seg.tvd_end_ft - seg.tvd_start_ft)
-            cum_ann_dp += dp_dl_ann * seg.length_ft
-
-            hydrostatic_psi = self.surface_mud_weight_ppg * self.config.hydrostatic_factor * cum_tvd
-            ecd = self.surface_mud_weight_ppg + (cum_ann_dp / (self.config.hydrostatic_factor * max(1.0, cum_tvd)))
-
-            profile.append({
-                "measured_depth_ft": round(cum_md, 1),
-                "true_vertical_depth_ft": round(cum_tvd, 1),
-                "hydrostatic_pressure_psi": round(hydrostatic_psi, 2),
-                "annular_friction_loss_psi": round(cum_ann_dp, 2),
-                "equivalent_circulating_density_ppg": round(ecd, 3)
-            })
-
-        return profile
 
     def solve(self) -> Dict[str, Any]:
         if not self.segments:
@@ -607,10 +562,20 @@ class AdvancedDrillingHydraulicsEngine:
         hydraulic_horsepower = (self.flow_rate_gpm * final_spp_psi) / self.config.hhp_constant
         brake_horsepower = hydraulic_horsepower / (self.pump_efficiency.volumetric_efficiency * self.pump_efficiency.mechanical_efficiency)
 
+        # Average Annular Velocity Calculation for standard telemetry output
+        total_ann_area = sum((calculate_cross_sectional_area(s.hole_id_in) - calculate_cross_sectional_area(s.pipe_od_in)) for s in self.segments) / len(self.segments)
+        avg_annular_velocity = (self.config.velocity_constant * self.flow_rate_gpm) / max(0.01, total_ann_area)
+
         return {
             "rheology_model": self.rheology_model.value,
             "standpipe_pressure_spp_psi": round(final_spp_psi, 2),
+            "standpipe_pressure_psi": round(final_spp_psi, 2),
             "bottomhole_ecd_ppg": round(bottomhole_ecd, 3),
+            "equivalent_circulating_density_ecd_ppg": round(bottomhole_ecd, 3),
+            "ecd_ppg": round(bottomhole_ecd, 3),
+            "total_pressure_loss_psi": round(final_spp_psi, 2),
+            "total_annular_pressure_loss_psi": round(total_annular_dp, 2),
+            "annular_velocity_ft_min": round(avg_annular_velocity, 2),
             "hydraulic_horsepower_hhp": round(hydraulic_horsepower, 2),
             "brake_horsepower_bhp": round(brake_horsepower, 2),
             "total_annular_loss_psi": round(total_annular_dp, 2),
@@ -621,11 +586,45 @@ class AdvancedDrillingHydraulicsEngine:
         }
 
 
-# ==============================================================================
-# BACKWARD COMPATIBILITY ALIAS
-# Allows `from physics import DrillingHydraulicsEngine` in app.py without errors
-# ==============================================================================
 DrillingHydraulicsEngine = AdvancedDrillingHydraulicsEngine
+
+
+# ==============================================================================
+# DIAGNOSTIC ENGINE IMPLEMENTATION
+# ==============================================================================
+class DiagnosticEngine:
+    """Multi-factor diagnostic rule engine analyzing hydraulic telemetry."""
+
+    def __init__(self, ecd_upper_threshold_delta: float = 1.5, max_spp_limit: float = 3500.0):
+        self.ecd_upper_threshold_delta = ecd_upper_threshold_delta
+        self.max_spp_limit = max_spp_limit
+
+    def analyze_telemetry(self, physics_metrics: Dict[str, Any], historical_esd: float) -> Dict[str, Any]:
+        warnings = list(physics_metrics.get("validation_warnings", []))
+        recommendations = []
+
+        ecd = physics_metrics.get("ecd_ppg", 0.0)
+        spp = physics_metrics.get("standpipe_pressure_psi", 0.0)
+
+        if ecd > historical_esd + self.ecd_upper_threshold_delta:
+            ecd_status = "CRITICAL"
+            warnings.append(f"ECD ({ecd} ppg) exceeds structural threshold delta above ESD ({historical_esd} ppg).")
+            recommendations.append("Reduce flow rate or adjust mud rheology to lower annular pressure drop.")
+        else:
+            ecd_status = "OPTIMAL"
+
+        if spp > self.max_spp_limit:
+            warnings.append(f"Standpipe Pressure ({spp} psi) exceeds upper operating boundary ({self.max_spp_limit} psi).")
+            recommendations.append("Upsize bit nozzles or lower circulation rate to prevent rig pump overpressure.")
+
+        if not recommendations:
+            recommendations.append("Maintain existing circulation parameters.")
+
+        return {
+            "ecd_status": ecd_status,
+            "warnings": warnings,
+            "recommendations": recommendations
+        }
 
 
 # ==============================================================================
@@ -657,73 +656,3 @@ class HydraulicsOptimizer:
 
         logger.info(f"Optimized Nozzles (State Preserved): {best_nozzles}")
         return best_nozzles
-
-
-# ==============================================================================
-# INDUSTRIAL REST API BACKEND WRAPPER
-# ==============================================================================
-class HydraulicsRequest(BaseModel):
-    surface_mud_weight_ppg: float
-    flow_rate_gpm: float
-    total_md_ft: float
-    total_tvd_ft: float
-    rheology_model: RheologyModel = RheologyModel.BINGHAM_PLASTIC
-    bit_diameter_in: float
-    viscometer_readings: Optional[ViscometerReadings] = None
-    segments: List[WellSegment]
-    nozzles: List[NozzleInput]
-
-
-def create_fastapi_app():
-    """
-    Constructs a production-ready FastAPI app instance exposing REST endpoints.
-    Requires: pip install fastapi uvicorn
-    """
-    try:
-        from fastapi import FastAPI, HTTPException
-
-        app = FastAPI(
-            title="Drilling Hydraulics API Engine",
-            version="2.0.0",
-            description="API RP 13D Compliant Hydraulics & Rheology Microservice"
-        )
-
-        @app.post("/api/v2/hydraulics/solve")
-        def solve_hydraulics(request: HydraulicsRequest):
-            try:
-                engine = AdvancedDrillingHydraulicsEngine(
-                    surface_mud_weight_ppg=request.surface_mud_weight_ppg,
-                    flow_rate_gpm=request.flow_rate_gpm,
-                    total_md_ft=request.total_md_ft,
-                    total_tvd_ft=request.total_tvd_ft,
-                    rheology_model=request.rheology_model,
-                    bit_diameter_in=request.bit_diameter_in
-                )
-
-                if request.viscometer_readings:
-                    bingham = ViscometerReader.fit_bingham_plastic(request.viscometer_readings)
-                    for seg in request.segments:
-                        seg.viscosity_cp = bingham["plastic_viscosity_cp"]
-                        seg.yield_point_lb_100ft2 = bingham["yield_point_lb_100ft2"]
-
-                for seg in request.segments:
-                    engine.add_segment(seg)
-                for noz in request.nozzles:
-                    engine.add_nozzle(noz)
-
-                return engine.solve()
-            except Exception as e:
-                raise HTTPException(status_code=400, detail=str(e))
-
-        @app.post("/api/v2/rheology/fit-viscometer")
-        def fit_viscometer(readings: ViscometerReadings):
-            return {
-                "bingham_plastic": ViscometerReader.fit_bingham_plastic(readings),
-                "power_law": ViscometerReader.fit_power_law(readings),
-                "herschel_bulkley": ViscometerReader.fit_herschel_bulkley(readings)
-            }
-
-        return app
-    except ImportError:
-        logger.warning("FastAPI package not installed. Microservice wrapper unmounted.")
-        return None
