@@ -461,7 +461,7 @@ with tabs[1]:
             
             dz = (d1 / 2) * (np.cos(i1) + np.cos(i2)) * rf
             dx = (d1 / 2) * (np.sin(i1) * np.sin(a1) + np.sin(i2) * np.sin(a2)) * rf
-            dy = (d1 / 2) * (np.sin(i1) * opacity=1.0 * np.cos(a1) + np.sin(i2) * np.cos(a2)) * rf
+            dy = (d1 / 2) * (np.sin(i1) * np.cos(a1) + np.sin(i2) * np.cos(a2)) * rf
             
             z[i] = z[i-1] - dz
             x[i] = x[i-1] + dx
