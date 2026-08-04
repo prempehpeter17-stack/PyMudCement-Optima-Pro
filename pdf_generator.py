@@ -11,12 +11,24 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import colors
 from reportlab.pdfgen import canvas
 from reportlab.graphics.shapes import Drawing, Rect, Line, String
-from svglib.svglib import svg2rlg
+
+# Safe import guard for svglib to prevent app crashes on missing system dependencies
+try:
+    from svglib.svglib import svg2rlg
+    HAS_SVGLIB = True
+except ImportError:
+    HAS_SVGLIB = False
+    svg2rlg = None
 
 logger = logging.getLogger(__name__)
 
 
 class NumberedCanvas(canvas.Canvas):
+    """
+    Two-pass canvas renderer to dynamically inject total page count
+    and standardize professional header/footer rules.
+    """
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._saved_page_states = []
@@ -33,19 +45,19 @@ class NumberedCanvas(canvas.Canvas):
             super().showPage()
         super().save()
 
-    def draw_page_decorations(self, page_count):
+    def draw_page_decorations(self, page_count: int):
         self.saveState()
         self.setFont("Helvetica-Bold", 8)
         self.setFillColor(colors.HexColor("#64748B"))
 
-        # ASCII hyphen used to avoid Latin-1 codec issues with em-dashes
+        # Running Header (Pages 2+)
         if self._pageNumber > 1:
             self.drawString(54, 765, "PYMUDCEMENT OPTIMA PRO - TECHNICAL COMPLIANCE REPORT")
             self.setStrokeColor(colors.HexColor("#CBD5E1"))
             self.setLineWidth(0.5)
             self.line(54, 757, 558, 757)
 
-        # Bottom footer section
+        # Footer Rule & Text (All Pages)
         self.setStrokeColor(colors.HexColor("#E2E8F0"))
         self.setLineWidth(1)
         self.line(54, 45, 558, 45)
@@ -57,15 +69,20 @@ class NumberedCanvas(canvas.Canvas):
 
 
 def load_logo_drawing(svg_path: str = "logo.svg", target_height: float = 38.0) -> Optional[Drawing]:
-    """Loads SVG logo, scales proportionally, and logs parsing failures safely."""
+    """Loads SVG logo, scales proportionally, and safely handles missing libraries or files."""
+    if not HAS_SVGLIB:
+        logger.info("svglib is not installed. Skipping SVG logo rendering.")
+        return None
+
     if not os.path.exists(svg_path):
         logger.warning(f"Logo SVG file missing at path: {svg_path}")
         return None
+
     try:
         drawing = svg2rlg(svg_path)
         if drawing is None:
             return None
-        
+
         scale = target_height / float(drawing.height)
         drawing.width *= scale
         drawing.height = target_height
@@ -84,7 +101,8 @@ def create_pressure_window_chart(
     """Generates dynamic pressure window graphic with label collision prevention."""
     d = Drawing(450, 140)
     d.add(Rect(0, 0, 450, 140, fillColor=colors.HexColor("#F8FAFC"), strokeColor=colors.HexColor("#E2E8F0")))
-    
+
+    # Gridlines
     for x in range(50, 450, 50):
         d.add(Line(x, 10, x, 130, strokeColor=colors.HexColor("#E2E8F0"), strokeWidth=0.5))
 
@@ -97,7 +115,7 @@ def create_pressure_window_chart(
     x_ecd = ppg_to_x(ecd_ppg)
     x_frac = ppg_to_x(fracture_gradient_ppg)
 
-    # Zones
+    # Pressure Zones
     d.add(Rect(50, 10, max(0, x_pp - 50), 120, fillColor=colors.HexColor("#FEE2E2"), strokeColor=None))
     d.add(Rect(x_pp, 10, max(0, x_frac - x_pp), 120, fillColor=colors.HexColor("#DCFCE7"), strokeColor=None))
     d.add(Rect(x_frac, 10, max(0, 400 - x_frac), 120, fillColor=colors.HexColor("#FEE2E2"), strokeColor=None))
@@ -111,7 +129,7 @@ def create_pressure_window_chart(
     d.add(String(60, 118, f"Pore Press: {pore_pressure_ppg:.2f} ppg", fontName="Helvetica-Bold", fontSize=8, fillColor=colors.HexColor("#991B1B")))
     d.add(String(ecd_label_x, 65, f"ECD: {ecd_ppg:.2f} ppg", fontName="Helvetica-Bold", fontSize=8, fillColor=colors.HexColor("#1D4ED8")))
     d.add(String(320, 118, f"Frac Limit: {fracture_gradient_ppg:.2f} ppg", fontName="Helvetica-Bold", fontSize=8, fillColor=colors.HexColor("#991B1B")))
-    
+
     return d
 
 
@@ -122,9 +140,17 @@ def generate_pdf_payload(
     engineer_name: str = "Peter Prempeh",
     logo_path: str = "logo.svg"
 ) -> io.BytesIO:
+    """Generates standard engineering PDF compliance report."""
     buffer = io.BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=letter, leftMargin=54, rightMargin=54, topMargin=54, bottomMargin=64)
-    
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=letter,
+        leftMargin=54,
+        rightMargin=54,
+        topMargin=54,
+        bottomMargin=64
+    )
+
     asset_name = str(project_metadata.get('name', 'UNSPECIFIED ASSET'))
     doc.title = f"PyMudCement Optima Pro Technical Report - {asset_name}"
     doc.author = engineer_name
@@ -132,11 +158,13 @@ def generate_pdf_payload(
 
     styles = getSampleStyleSheet()
 
+    # Base typography styles
     title_style = ParagraphStyle('CompTitle', fontName='Helvetica-Bold', fontSize=18, leading=22, textColor=colors.HexColor('#0F172A'))
     subtitle_style = ParagraphStyle('CompSub', fontName='Helvetica', fontSize=10, leading=14, textColor=colors.HexColor('#F97316'))
     h1_style = ParagraphStyle('SectH1', fontName='Helvetica-Bold', fontSize=10.5, leading=14, textColor=colors.HexColor('#0F172A'), spaceBefore=8, spaceAfter=4)
     body_style = ParagraphStyle('SectBody', fontName='Helvetica', fontSize=8, leading=11, textColor=colors.HexColor('#334155'))
     bold_body = ParagraphStyle('SectBodyBold', fontName='Helvetica-Bold', fontSize=8, leading=11, textColor=colors.HexColor('#1E293B'))
+    table_header_style = ParagraphStyle('TableHeader', fontName='Helvetica-Bold', fontSize=8, leading=11, textColor=colors.white)
 
     # Status color styles
     pass_style = ParagraphStyle('StatusPass', parent=bold_body, textColor=colors.HexColor('#166534'))
@@ -169,7 +197,7 @@ def generate_pdf_payload(
     utc_now = datetime.now(timezone.utc)
     report_id = f"PMC-{uuid.uuid4().hex[:8].upper()}"
 
-    # --- Metadata Table (Strict Non-misleading Defaults) ---
+    # --- Metadata Table ---
     meta_data = [
         [Paragraph("<b>Project Asset:</b>", body_style), Paragraph(asset_name, body_style), Paragraph("<b>Rig Identification:</b>", body_style), Paragraph(str(project_metadata.get('rig_name', 'NOT SPECIFIED')), body_style)],
         [Paragraph("<b>Well API Number:</b>", body_style), Paragraph(str(project_metadata.get('api_number', 'NOT PROVIDED')), body_style), Paragraph("<b>Hole Section Size:</b>", body_style), Paragraph(f"{project_metadata.get('hole_size_in', 0.0):.2f} in", body_style)],
@@ -179,15 +207,15 @@ def generate_pdf_payload(
     ]
     t_meta = Table(meta_data, colWidths=[105, 145, 105, 145])
     t_meta.setStyle(TableStyle([
-        ('BACKGROUND', (0,0), (-1,-1), colors.HexColor('#F8FAFC')),
-        ('BOX', (0,0), (-1,-1), 1, colors.HexColor('#E2E8F0')),
-        ('INNERGRID', (0,0), (-1,-1), 0.5, colors.HexColor('#F1F5F9')),
-        ('TOPPADDING', (0,0), (-1,-1), 3),
-        ('BOTTOMPADDING', (0,0), (-1,-1), 3),
+        ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#F8FAFC')),
+        ('BOX', (0, 0), (-1, -1), 1, colors.HexColor('#E2E8F0')),
+        ('INNERGRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#F1F5F9')),
+        ('TOPPADDING', (0, 0), (-1, -1), 3),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
     ]))
     elements.extend([t_meta, Spacer(1, 6)])
 
-    # --- Executive Health Summary ---
+    # --- Executive Summary ---
     severity = diagnostic_results.get("severity", "GREEN").upper()
     status_text = {
         "GREEN": "STATUS: STABLE OPERATIONAL GRADIENT",
@@ -204,19 +232,19 @@ def generate_pdf_payload(
     ]
     t_summary = Table(summary_box, colWidths=[130, 370])
     t_summary.setStyle(TableStyle([
-        ('BOX', (0,0), (-1,-1), 1.5, colors.HexColor('#0F172A')),
-        ('BACKGROUND', (0,0), (0,-1), colors.HexColor('#F1F5F9')),
-        ('TOPPADDING', (0,0), (-1,-1), 4),
-        ('BOTTOMPADDING', (0,0), (-1,-1), 4),
+        ('BOX', (0, 0), (-1, -1), 1.5, colors.HexColor('#0F172A')),
+        ('BACKGROUND', (0, 0), (0, -1), colors.HexColor('#F1F5F9')),
+        ('TOPPADDING', (0, 0), (-1, -1), 4),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
     ]))
     elements.extend([Paragraph("EXECUTIVE SUMMARY", h1_style), t_summary, Spacer(1, 6)])
 
-    # --- Hydraulics & Safety Evaluation ---
+    # --- Primary Mechanical Hydraulics Summary ---
     safety_limits = project_metadata.get("safety_limits", {})
     max_ecd_limit = safety_limits.get("max_ecd_ppg", 15.5)
     max_spp_limit = safety_limits.get("max_spp_psi", 3500.0)
 
-    ecd = physics_results.get("equivalent_circulating_density_ecd_ppg", 0.0)
+    ecd = physics_results.get("equivalent_circulating_density_ecd_ppg", physics_results.get("bottomhole_ecd_ppg", 0.0))
     spp = physics_results.get("standpipe_pressure_spp_psi", 0.0)
 
     ecd_status_style = pass_style if ecd <= max_ecd_limit else fail_style
@@ -224,19 +252,18 @@ def generate_pdf_payload(
 
     elements.append(Paragraph("1. Primary Mechanical Hydraulics Summary", h1_style))
     comp_rows = [
-        [Paragraph("<b>Metric Parameter</b>", bold_body), Paragraph("<b>Value Output</b>", bold_body), Paragraph("<b>Safe Limit</b>", bold_body), Paragraph("<b>Status</b>", bold_body)],
+        [Paragraph("Metric Parameter", table_header_style), Paragraph("Value Output", table_header_style), Paragraph("Safe Limit", table_header_style), Paragraph("Status", table_header_style)],
         [Paragraph("Equivalent Circulating Density (ECD)", body_style), Paragraph(f"{ecd:.2f} ppg", body_style), Paragraph(f"<= {max_ecd_limit:.2f} ppg", body_style), Paragraph("PASS" if ecd <= max_ecd_limit else "FAIL", ecd_status_style)],
         [Paragraph("Standpipe Pressure (SPP)", body_style), Paragraph(f"{spp:.1f} psi", body_style), Paragraph(f"<= {max_spp_limit:.0f} psi", body_style), Paragraph("PASS" if spp <= max_spp_limit else "WARNING", spp_status_style)],
-        [Paragraph("Annular Pressure Loss", body_style), Paragraph(f"{physics_results.get('total_annular_pressure_loss_psi', 0.0):.1f} psi", body_style), Paragraph("Dynamic Window", body_style), Paragraph("PASS", pass_style)],
-        [Paragraph("Drillstring Pressure Loss", body_style), Paragraph(f"{physics_results.get('total_pipe_pressure_loss_psi', 0.0):.1f} psi", body_style), Paragraph("Dynamic Window", body_style), Paragraph("PASS", pass_style)],
+        [Paragraph("Annular Pressure Loss", body_style), Paragraph(f"{physics_results.get('total_annular_pressure_loss_psi', physics_results.get('total_annular_loss_psi', 0.0)):.1f} psi", body_style), Paragraph("Dynamic Window", body_style), Paragraph("PASS", pass_style)],
+        [Paragraph("Drillstring Pressure Loss", body_style), Paragraph(f"{physics_results.get('total_pipe_pressure_loss_psi', physics_results.get('total_pipe_loss_psi', 0.0)):.1f} psi", body_style), Paragraph("Dynamic Window", body_style), Paragraph("PASS", pass_style)],
     ]
     t_comp = Table(comp_rows, colWidths=[160, 110, 130, 100])
     t_comp.setStyle(TableStyle([
-        ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#0F172A')),
-        ('TEXTCOLOR', (0,0), (-1,0), colors.white),
-        ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor('#CBD5E1')),
-        ('TOPPADDING', (0,0), (-1,-1), 3),
-        ('BOTTOMPADDING', (0,0), (-1,-1), 3),
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#0F172A')),
+        ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#CBD5E1')),
+        ('TOPPADDING', (0, 0), (-1, -1), 3),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
     ]))
     elements.extend([t_comp, Spacer(1, 6)])
 
@@ -249,15 +276,15 @@ def generate_pdf_payload(
     ]
     t_rheo = Table(rheo_data, colWidths=[105, 145, 105, 145])
     t_rheo.setStyle(TableStyle([
-        ('BACKGROUND', (0,0), (-1,-1), colors.HexColor('#F8FAFC')),
-        ('BOX', (0,0), (-1,-1), 1, colors.HexColor('#E2E8F0')),
-        ('INNERGRID', (0,0), (-1,-1), 0.5, colors.HexColor('#F1F5F9')),
-        ('TOPPADDING', (0,0), (-1,-1), 3),
-        ('BOTTOMPADDING', (0,0), (-1,-1), 3),
+        ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#F8FAFC')),
+        ('BOX', (0, 0), (-1, -1), 1, colors.HexColor('#E2E8F0')),
+        ('INNERGRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#F1F5F9')),
+        ('TOPPADDING', (0, 0), (-1, -1), 3),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
     ]))
     elements.extend([t_rheo, Spacer(1, 6)])
 
-    # --- Well Control Readiness Snapshot ---
+    # --- Well Control Readiness ---
     elements.append(Paragraph("3. Well Control Readiness Snapshot", h1_style))
     wc_data = [
         [Paragraph("<b>MAASP:</b>", body_style), Paragraph(f"{physics_results.get('maasp_psi', 0.0):.0f} psi", body_style), Paragraph("<b>Kick Tolerance:</b>", body_style), Paragraph(f"{physics_results.get('kick_tolerance_bbl', 0.0):.1f} bbl", body_style)],
@@ -265,19 +292,19 @@ def generate_pdf_payload(
     ]
     t_wc = Table(wc_data, colWidths=[105, 145, 105, 145])
     t_wc.setStyle(TableStyle([
-        ('BACKGROUND', (0,0), (-1,-1), colors.HexColor('#F8FAFC')),
-        ('BOX', (0,0), (-1,-1), 1, colors.HexColor('#E2E8F0')),
-        ('INNERGRID', (0,0), (-1,-1), 0.5, colors.HexColor('#F1F5F9')),
-        ('TOPPADDING', (0,0), (-1,-1), 3),
-        ('BOTTOMPADDING', (0,0), (-1,-1), 3),
+        ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#F8FAFC')),
+        ('BOX', (0, 0), (-1, -1), 1, colors.HexColor('#E2E8F0')),
+        ('INNERGRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#F1F5F9')),
+        ('TOPPADDING', (0, 0), (-1, -1), 3),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
     ]))
     elements.extend([t_wc, Spacer(1, 6)])
 
-    # --- Data-Driven Dynamic Pressure Chart ---
+    # --- Dynamic Pressure Chart ---
     elements.append(Paragraph("4. Hydraulic Operating Window Profile", h1_style))
     pore_press = physics_results.get("pore_pressure_ppg", 11.2)
     frac_grad = physics_results.get("fracture_gradient_ppg", 14.8)
-    
+
     elements.append(create_pressure_window_chart(
         pore_pressure_ppg=pore_press,
         ecd_ppg=ecd,
@@ -307,7 +334,7 @@ def generate_pdf_payload(
     t_sig = Table(sig_data, colWidths=[250, 250])
     elements.append(t_sig)
 
-    # Protected PDF build execution
+    # Safe PDF compilation
     try:
         doc.build(elements, canvasmaker=NumberedCanvas)
     except Exception as e:
