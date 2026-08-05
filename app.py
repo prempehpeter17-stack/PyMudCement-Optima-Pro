@@ -391,9 +391,16 @@ with tabs[1]:
     edited_survey = st.data_editor(survey_data, num_rows="dynamic", use_container_width=True)
 
     def calculate_mcm(df: pd.DataFrame):
-        md = df["MD (ft)"].values
-        inc = np.radians(df["Inc (deg)"].values)
-        az = np.radians(df["Az (deg)"].values)
+        norm_df = df.copy()
+        norm_df.columns = [str(c).strip().lower() for c in norm_df.columns]
+        
+        md_col = next((c for c in norm_df.columns if 'md' in c), 'md (ft)')
+        inc_col = next((c for c in norm_df.columns if 'inc' in c), 'inc (deg)')
+        az_col = next((c for c in norm_df.columns if 'az' in c or 'azi' in c), 'az (deg)')
+        
+        md = norm_df[md_col].values
+        inc = np.radians(norm_df[inc_col].values)
+        az = np.radians(norm_df[az_col].values)
 
         n = len(md)
         x, y, z = np.zeros(n), np.zeros(n), np.zeros(n)
