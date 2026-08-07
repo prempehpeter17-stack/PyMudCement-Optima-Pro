@@ -21,7 +21,6 @@ from router import router as auth_router
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("PyMudCementOptimaPro.API")
 
-
 # ==========================================
 # SETTINGS CONFIGURATION
 # ==========================================
@@ -43,7 +42,6 @@ settings = Settings()
 
 # Global Diagnostic Instance
 ai_diagnostics: Optional[DiagnosticEngine] = None
-
 
 # ==========================================
 # LIFESPAN MANAGEMENT
@@ -67,7 +65,6 @@ async def lifespan(app: FastAPI):
 
     logger.info("Shutting down PyMudCement Optima Pro services...")
 
-
 # ==========================================
 # FASTAPI APP INITIALIZATION
 # ==========================================
@@ -88,7 +85,6 @@ app.add_middleware(
 
 app.include_router(auth_router)
 
-
 # ==========================================
 # GLOBAL EXCEPTION HANDLER
 # ==========================================
@@ -96,10 +92,9 @@ app.include_router(auth_router)
 async def global_exception_handler(request: Request, exc: Exception):
     logger.exception("Unhandled application error on path: %s", request.url.path)
     return JSONResponse(
-        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        status_status=status.HTTP_500_INTERNAL_SERVER_ERROR,
         content={"detail": "Internal server error"}
     )
-
 
 # ==========================================
 # PYDANTIC INPUT SCHEMAS
@@ -120,12 +115,10 @@ class WellSegmentSchema(BaseModel):
             raise ValueError("Bottom MD must be greater than Top MD")
         return self
 
-
 class ReportMetadata(BaseModel):
     company: str = Field(default="Global Energy Corp")
     well_name: str = Field(default="Well 101-A")
     engineer: str = Field(default="Lead Drilling Engineer")
-
 
 class HydraulicsPayloadSchema(BaseModel):
     flow_rate_gpm: float = Field(default=450.0, gt=0.0, le=2000.0)
@@ -136,7 +129,6 @@ class HydraulicsPayloadSchema(BaseModel):
     segments: Optional[List[WellSegmentSchema]] = None
     metadata: Optional[ReportMetadata] = None
 
-
 # ==========================================
 # OUTPUT SCHEMAS
 # ==========================================
@@ -145,13 +137,11 @@ class DiagnosticResponse(BaseModel):
     warnings: List[str] = []
     recommendations: List[str] = []
 
-
 class PhysicsResponse(BaseModel):
     ecd_ppg: float
     total_pressure_loss_psi: float
     annular_velocity_ft_min: float
     standpipe_pressure_psi: float
-
 
 class HydraulicsResponse(BaseModel):
     request_id: str
@@ -159,12 +149,10 @@ class HydraulicsResponse(BaseModel):
     physics_results: PhysicsResponse
     diagnostics: DiagnosticResponse
 
-
 # ==========================================
 # SERVICE LAYER
 # ==========================================
 def run_hydraulics_service(payload: HydraulicsPayloadSchema, request_id: str) -> dict:
-    """Pure domain logic for hydraulics execution."""
     logger.info(
         "REQUEST [%s]: Service started | Depth=%s ft | MW=%s ppg",
         request_id,
@@ -219,7 +207,6 @@ def run_hydraulics_service(payload: HydraulicsPayloadSchema, request_id: str) ->
         "diagnostics": diagnostics
     }
 
-
 # ==========================================
 # SYSTEM STATUS & HEALTH ROUTES
 # ==========================================
@@ -228,7 +215,6 @@ async def check_database_connection() -> bool:
         return True
     except Exception:
         return False
-
 
 @app.get("/health", tags=["System Status"])
 async def health_check():
@@ -245,11 +231,9 @@ async def health_check():
         "engine_version": settings.engine_version
     }
 
-
 @app.get("/", tags=["System Status"])
 async def root():
     return {"system": settings.app_name, "status": "OPERATIONAL", "version": settings.version}
-
 
 # ==========================================
 # HYDRAULICS CALCULATION & REPORTING ENDPOINTS
@@ -290,7 +274,6 @@ async def calculate_hydraulics(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=str(re_err)
         )
-
 
 @app.post("/api/v1/hydraulics/export-pdf", tags=["Reports"])
 async def export_pdf_report(
@@ -338,7 +321,6 @@ async def export_pdf_report(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=str(re_err)
         )
-
 
 if __name__ == "__main__":
     import uvicorn
