@@ -263,7 +263,10 @@ if not st.session_state.authenticated:
                     process_authentication(auth_mode, email, password, company)
                 )
                 if auth_mode == "Register Account":
-                    st.success(response) if success else st.error(response)
+                    if success:
+                        st.success(response)
+                    else:
+                        st.error(response)
                 else:
                     if success:
                         st.session_state.authenticated = True
