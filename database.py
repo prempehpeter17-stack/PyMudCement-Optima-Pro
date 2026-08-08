@@ -1,167 +1,46 @@
-from datetime import datetime, timezone
-import re
-from typing import List, Optional, Dict, Any
-
-from sqlalchemy import String, Float, Integer, ForeignKey, DateTime, JSON, Boolean, Text, event
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, validates
+# database.py
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+from sqlalchemy import String, Integer, ForeignKey, DateTime, JSON
+from datetime import datetime
 
 DATABASE_URL = "sqlite+aiosqlite:///./pymudcement.db"
 
-# Create Async Engine
 engine = create_async_engine(DATABASE_URL, echo=False)
-
-# Enable Foreign Key Support for SQLite
-@event.listens_for(engine.sync_engine, "connect")
-def enable_sqlite_foreign_keys(dbapi_connection, connection_record):
-    cursor = dbapi_connection.cursor()
-    cursor.execute("PRAGMA foreign_keys=ON")
-    cursor.close()
-
-# Async Session Factory
-AsyncSessionLocal = async_sessionmaker(
-    bind=engine,
-    expire_on_commit=False,
-    class_=AsyncSession
-)
+AsyncSessionLocal = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
 
 class Base(DeclarativeBase):
-    """Base model class for SQLAlchemy declarative mappings."""
     pass
 
-# ==============================================================================
-# USER MODEL
-# ==============================================================================
-
-class User(Base):
+class UserModel(Base):
     __tablename__ = "users"
-
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
-    username: Mapped[str] = mapped_column(String(50), unique=True, index=True, nullable=False)
-    email: Mapped[str] = mapped_column(String(100), unique=True, index=True, nullable=False)
-    hashed_password: Mapped[str] = mapped_column(String(255), nullable=False)
-    role: Mapped[str] = mapped_column(String(20), default="drilling_engineer", nullable=False)
-    company_name: Mapped[str] = mapped_column(String(100), default="Enterprise Hydrocarbons Corp", index=True, nullable=False)
+    username: Mapped[str] = mapped_column(String(50), unique=True, index=True)
+    email: Mapped[str] = mapped_column(String(100), unique=True, index=True)
+    hashed_password: Mapped[str] = mapped_column(String(255))
+    role: Mapped[str] = mapped_column(String(20), default="Engineer")
+    company_name: Mapped[str] = mapped_column(String(100), default="Enterprise Hydrocarbons Corp")
 
-    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
-    email_verified: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
-
-    failed_login_attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    locked_until: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
-
-    password_reset_token: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
-    password_reset_expiry: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
-
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False
-    )
-
-    # Relationships
-    projects: Mapped[List["Project"]] = relationship(
-        "Project", back_populates="owner", cascade="all, delete-orphan", passive_deletes=True
-    )
-    revoked_tokens: Mapped[List["RevokedToken"]] = relationship(
-        "RevokedToken", back_populates="user", cascade="all, delete-orphan", passive_deletes=True
-    )
-    refresh_tokens: Mapped[List["RefreshToken"]] = relationship(
-        "RefreshToken", back_populates="user", cascade="all, delete-orphan", passive_deletes=True
-    )
-    audit_logs: Mapped[List["AuditLog"]] = relationship(
-        "AuditLog", back_populates="user", cascade="all, delete-orphan", passive_deletes=True
-    )
-
-    @validates("email")
-    def validate_email(self, key: str, address: str) -> str:
-        email_regex = r"^[\w\.-]+@[\w\.-]+\.\w+$"
-        if not address or not re.match(email_regex, address):
-            raise ValueError(f"Invalid email address provided: {address}")
-        return address
-
-# ==============================================================================
-# REFRESH TOKEN MODEL
-# ==============================================================================
-
-class RefreshToken(Base):
-    __tablename__ = "refresh_tokens"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
-    jti: Mapped[str] = mapped_column(String(36), unique=True, index=True, nullable=False)
-    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
-    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    revoked: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
-
-    user: Mapped["User"] = relationship("User", back_populates="refresh_tokens")
-
-# ==============================================================================
-# REVOKED TOKEN MODEL
-# ==============================================================================
-
-class RevokedToken(Base):
-    __tablename__ = "revoked_tokens"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
-    jti: Mapped[str] = mapped_column(String(36), unique=True, index=True, nullable=False)
-    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
-    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-
-    user: Mapped["User"] = relationship("User", back_populates="revoked_tokens")
-
-# ==============================================================================
-# AUDIT LOG MODEL
-# ==============================================================================
-
-class AuditLog(Base):
-    __tablename__ = "audit_logs"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
-    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
-    action: Mapped[str] = mapped_column(String(255), index=True, nullable=False)
-    ip_address: Mapped[Optional[str]] = mapped_column(String(45), nullable=True)
-    details: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSON, nullable=True)
-    timestamp: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False, index=True
-    )
-
-    user: Mapped["User"] = relationship("User", back_populates="audit_logs")
-
-# ==============================================================================
-# PROJECT MODEL
-# ==============================================================================
+    projects = relationship("Project", back_populates="owner", cascade="all, delete-orphan")
 
 class Project(Base):
     __tablename__ = "projects"
-
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
-    name: Mapped[str] = mapped_column(String(100), index=True, nullable=False)
-    well_name: Mapped[str] = mapped_column(String(100), index=True, nullable=False)
-    field_name: Mapped[str] = mapped_column(String(100), index=True, nullable=False, default="Unspecified Field")
-    rig_name: Mapped[str] = mapped_column(String(100), nullable=False, default="Unspecified Rig")
-    status: Mapped[str] = mapped_column(String(30), index=True, default="Planning", nullable=False)
+    name: Mapped[str] = mapped_column(String(100), index=True)
+    well_name: Mapped[str] = mapped_column(String(100))
+    field_name: Mapped[str] = mapped_column(String(100))
+    rig_name: Mapped[str] = mapped_column(String(100))
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
-    unit_system: Mapped[str] = mapped_column(String(20), default="Field US", nullable=False)
-    mud_weight: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
-    total_depth: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
-    hole_size: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
-
-    trajectory_data: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSON, nullable=True)
-    hydraulics_data: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSON, nullable=True)
-    cement_data: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSON, nullable=True)
-
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False
-    )
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc), nullable=False
-    )
-    deleted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
-
-    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
-    owner: Mapped["User"] = relationship("User", back_populates="projects")
-
-# ==============================================================================
-# INITIALIZATION
-# ==============================================================================
+    trajectory_data: Mapped[dict] = mapped_column(JSON, nullable=True)
+    owner = relationship("UserModel", back_populates="projects")
 
 async def init_db():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+
+# Dependency to get a database session (for FastAPI)
+async def get_db():
+    async with AsyncSessionLocal() as session:
+        yield session

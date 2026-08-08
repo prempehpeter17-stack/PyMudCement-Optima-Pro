@@ -3,180 +3,267 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 import asyncio
-import base64
-import re
 from datetime import datetime, timezone
-from typing import Dict, Any, Tuple
-
 from sqlalchemy import select, or_
-from sqlalchemy.exc import IntegrityError, SQLAlchemyError
-
-from database import init_db, AsyncSessionLocal, User
-from security import get_password_hash, verify_password
+from sqlalchemy.exc import IntegrityError
+from database import init_db, AsyncSessionLocal, UserModel
+from auth import get_password_hash, verify_password
 from physics import DrillingHydraulicsEngine, WellSegment, NozzleInput, RheologyModel
+from cementing_engine import PrimaryCementingInput, CementingEngine
 from pdf_generator import generate_pdf_payload
+from mud_parser import parse_mud_report
+from gradients import PressureGradientProfile
+from benchmarks import compare_cementing_results
+import base64
 
-# ==============================================================================
-# LOGO SVG DEFINITION
-# ============================================================================== 
 
-LOGO_SVG = """
-"""
+def get_base64_image(file_path: str) -> str:
+    with open(file_path, "rb") as f:
+        return base64.b64encode(f.read()).decode()
 
-def render_svg(svg_string: str, width: int = 50):
-    b64 = base64.b64encode(svg_string.encode('utf-8')).decode("utf-8")
-    return f'<img src="data:image/svg+xml;base64,{b64}" width="{width}" />'
 
-# ==============================================================================
-# CONFIGURATION & CONSTANTS
-# ============================================================================== 
+logo_base64 = get_base64_image("logo.png")
+asyncio.run(init_db())
 
-CONFIG = {
-    "DEFAULT_TOTAL_DEPTH": 10000.0,
-    "DEFAULT_FLOW_RATE": 550.0,
-    "DEFAULT_SURFACE_MW": 12.5,
-    "DEFAULT_PV": 22.0,
-    "DEFAULT_YP": 16.0,
-    "ECD_FRACTURE_LIMIT_PPG": 15.0,
-    "BIT_PRESSURE_RATIO_MIN": 0.50,
-    "BIT_PRESSURE_RATIO_MAX": 0.65,
-    "DEFAULT_COMPANY": "Enterprise Hydrocarbons Corp"
-}
-
-# ==============================================================================
-# SAFE ASYNC RUNNER FOR STREAMLIT
-# ============================================================================== 
-
-def run_async(coro):
-    try:
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            raise RuntimeError()
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-    return loop.run_until_complete(coro)
-
-try:
-    run_async(init_db())
-except SQLAlchemyError as e:
-    st.error(f"Database Initialization Failed: {str(e)}")
-
-# ==============================================================================
-# APP LAYOUT & THEME
-# ============================================================================== 
-
+# ============================
+# PAGE CONFIG
+# ============================
 st.set_page_config(
     page_title="PyMudCement Optima Pro",
-    page_icon="🛢️",
+    page_icon="logo.png",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="expanded",
 )
 
-st.markdown("""
+# ============================
+# SESSION STATE
+# ============================
+defaults = {
+    "authenticated": False,
+    "user_info": None,
+    "auto_pv": None,
+    "auto_yp": None,
+    "auto_mw": None,
+    "parsed": False,
+    "cementing_results": None,
+    "cementing_params": None,
+}
+for k, v in defaults.items():
+    if k not in st.session_state:
+        st.session_state[k] = v
+
+# ============================
+# THEME-AWARE CSS (works with Streamlit light/dark toggle)
+# ============================
+st.markdown(
+    """
 <style>
-.brand-container { display: flex; align-items: center; gap: 18px; margin-bottom: 10px; }
-.brand-title { font-size: 2.2rem; font-weight: 800; font-family: 'Segoe UI', Roboto, sans-serif; line-height: 1.1; margin: 0; }
-.brand-title-blue { color: #0047AB; }
-.brand-title-gold { color: #D4AF37; }
-.brand-subtitle { font-size: 0.9rem; color: #CA8A04; font-weight: 700; letter-spacing: 2.5px; margin-top: 2px; }
-.brand-tagline { font-size: 0.72rem; color: #0F172A; font-weight: 600; letter-spacing: 3px; margin-top: 1px; }
-.card { background-color: #FFFFFF; border-radius: 8px; padding: 15px; border: 1px solid #E2E8F0; margin-bottom: 10px; }
-.badge-pass { background-color: #DCFCE7; color: #166534; padding: 4px 8px; border-radius: 4px; font-weight: 600; }
-.badge-warn { background-color: #FEF3C7; color: #92400E; padding: 4px 8px; border-radius: 4px; font-weight: 600; }
-.badge-fail { background-color: #FEE2E2; color: #991B1B; padding: 4px 8px; border-radius: 4px; font-weight: 600; }
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+@import url('https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css');
+
+* { font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif; }
+
+/* ---------- LIGHT (default) ---------- */
+.main-header {
+    font-size: 2.05rem; font-weight: 800; letter-spacing: -0.03em;
+    color: #1e3a8a; margin: 0; line-height: 1.2;
+}
+.sub-header {
+    font-size: 0.92rem; font-weight: 500; color: #475569;
+    margin-top: 0.2rem; margin-bottom: 1.4rem; padding-bottom: 0.7rem;
+    border-bottom: 1px solid #e2e8f0;
+}
+.metric-card {
+    background: #ffffff; border: 1px solid #e2e8f0; border-left: 4px solid #2563eb;
+    border-radius: 12px; padding: 1.05rem 1.2rem;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.04);
+    transition: transform 0.15s ease, box-shadow 0.15s ease; height: 100%;
+}
+.metric-card:hover { transform: translateY(-2px); box-shadow: 0 6px 16px rgba(37,99,235,0.12); }
+.metric-card .label {
+    font-size: 0.7rem; font-weight: 600; text-transform: uppercase;
+    letter-spacing: 0.05em; color: #64748b;
+    display: flex; align-items: center; gap: 6px; margin-bottom: 0.3rem;
+}
+.metric-card .value { font-size: 1.55rem; font-weight: 800; color: #1e3a8a; line-height: 1.2; }
+.sidebar-heading {
+    font-size: 0.8rem; font-weight: 700; text-transform: uppercase;
+    letter-spacing: 0.06em; color: #2563eb; margin-top: 1.2rem; margin-bottom: 0.45rem;
+}
+.section-title {
+    font-size: 1.12rem; font-weight: 700; color: #1e293b;
+    margin-bottom: 0.3rem; display: flex; align-items: center; gap: 0.45rem;
+}
+.section-caption { font-size: 0.84rem; color: #64748b; margin-bottom: 1.15rem; }
+.footer {
+    font-size: 0.72rem; text-align: center; margin-top: 2.8rem; padding-top: 1.1rem;
+    border-top: 1px solid #e2e8f0; color: #94a3b8;
+}
+.stButton > button {
+    background: linear-gradient(135deg, #2563eb, #1d4ed8) !important;
+    color: white !important; border: none !important; border-radius: 8px !important;
+    font-weight: 600 !important; padding: 0.55rem 1.25rem !important;
+    box-shadow: 0 2px 6px rgba(37,99,235,0.25) !important;
+    transition: all 0.15s ease !important;
+}
+.stButton > button:hover {
+    background: linear-gradient(135deg, #1d4ed8, #1e40af) !important;
+    box-shadow: 0 4px 12px rgba(37,99,235,0.35) !important; transform: translateY(-1px);
+}
+.stTabs [data-baseweb="tab-list"] { gap: 0.2rem; border-bottom: 1px solid #e2e8f0; }
+.stTabs [data-baseweb="tab"] {
+    font-weight: 600 !important; font-size: 0.88rem !important;
+    padding: 0.55rem 1rem !important; border-radius: 8px 8px 0 0 !important; color: #64748b !important;
+}
+.stTabs [data-baseweb="tab"][aria-selected="true"] {
+    background: #2563eb !important; color: white !important;
+}
+.stTabs [data-baseweb="tab"]:hover { background: #eff6ff !important; color: #1e40af !important; }
+[data-testid="stMetricValue"] { font-weight: 700 !important; }
+.stAlert { border-radius: 10px !important; }
+
+/* ---------- DARK MODE ---------- */
+html.theme-dark .main-header,
+[data-theme="dark"] .main-header,
+.stApp[data-theme="dark"] .main-header { color: #facc15 !important; }
+
+html.theme-dark .sub-header,
+[data-theme="dark"] .sub-header {
+    color: #94a3b8 !important; border-bottom-color: #1e293b !important;
+}
+html.theme-dark .metric-card,
+[data-theme="dark"] .metric-card {
+    background: #1e293b !important; border-color: #334155 !important;
+    border-left-color: #facc15 !important;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.25) !important;
+}
+html.theme-dark .metric-card:hover,
+[data-theme="dark"] .metric-card:hover {
+    box-shadow: 0 6px 16px rgba(250,204,21,0.12) !important;
+}
+html.theme-dark .metric-card .label,
+[data-theme="dark"] .metric-card .label { color: #94a3b8 !important; }
+html.theme-dark .metric-card .value,
+[data-theme="dark"] .metric-card .value { color: #facc15 !important; }
+
+html.theme-dark .sidebar-heading,
+[data-theme="dark"] .sidebar-heading { color: #facc15 !important; }
+html.theme-dark .section-title,
+[data-theme="dark"] .section-title { color: #e2e8f0 !important; }
+html.theme-dark .section-caption,
+[data-theme="dark"] .section-caption { color: #94a3b8 !important; }
+html.theme-dark .footer,
+[data-theme="dark"] .footer {
+    border-top-color: #1e293b !important; color: #64748b !important;
+}
+html.theme-dark .stButton > button,
+[data-theme="dark"] .stButton > button {
+    background: linear-gradient(135deg, #facc15, #eab308) !important;
+    color: #0f172a !important;
+    box-shadow: 0 2px 8px rgba(250,204,21,0.25) !important;
+}
+html.theme-dark .stButton > button:hover,
+[data-theme="dark"] .stButton > button:hover {
+    background: linear-gradient(135deg, #eab308, #ca8a04) !important;
+    box-shadow: 0 4px 14px rgba(250,204,21,0.35) !important;
+}
+html.theme-dark .stTabs [data-baseweb="tab-list"],
+[data-theme="dark"] .stTabs [data-baseweb="tab-list"] { border-bottom-color: #1e293b !important; }
+html.theme-dark .stTabs [data-baseweb="tab"],
+[data-theme="dark"] .stTabs [data-baseweb="tab"] { color: #94a3b8 !important; }
+html.theme-dark .stTabs [data-baseweb="tab"][aria-selected="true"],
+[data-theme="dark"] .stTabs [data-baseweb="tab"][aria-selected="true"] {
+    background: #facc15 !important; color: #0f172a !important;
+}
+html.theme-dark .stTabs [data-baseweb="tab"]:hover,
+[data-theme="dark"] .stTabs [data-baseweb="tab"]:hover {
+    background: #1e293b !important; color: #facc15 !important;
+}
+html.theme-dark [data-testid="stMetricValue"],
+[data-theme="dark"] [data-testid="stMetricValue"] { color: #facc15 !important; }
 </style>
-""", unsafe_allow_html=True)
+""",
+    unsafe_allow_html=True,
+)
 
-if "authenticated" not in st.session_state:
-    st.session_state.authenticated = False
-if "user_info" not in st.session_state:
-    st.session_state.user_info = None
-if "failed_attempts" not in st.session_state:
-    st.session_state.failed_attempts = 0
-
-# ==============================================================================
-# AUTHENTICATION LOGIC
-# ============================================================================== 
-
-def validate_email(email: str) -> bool:
-    pattern = r"^[\w.-]+@[\w.-]+\.\w+$"
-    return bool(re.match(pattern, email))
-
-async def process_authentication(mode: str, username_val: str, password_val: str, email_val: str = None, company_val: str = None) -> Tuple[bool, Any]:
+# ============================
+# AUTHENTICATION
+# ============================
+async def process_authentication(mode, email_val, password_val, company_val=None):
     async with AsyncSessionLocal() as session:
         if mode == "Register Account":
-            if not validate_email(email_val):
-                return False, "Invalid corporate email format."
-            if len(password_val) < 8:
-                return False, "Password must be at least 8 characters long."
             try:
                 existing = await session.execute(
-                    select(User).where(or_(User.username == username_val, User.email == email_val))
+                    select(UserModel).where(
+                        or_(UserModel.email == email_val, UserModel.username == email_val)
+                    )
                 )
                 if existing.scalar_one_or_none():
-                    return False, "Username or email already registered."
-
+                    return False, "Email already registered."
                 hashed_pw = get_password_hash(password_val)
-                new_user = User(
-                    username=username_val,
+                new_user = UserModel(
+                    username=email_val,
                     email=email_val,
                     hashed_password=hashed_pw,
-                    company_name=company_val or CONFIG["DEFAULT_COMPANY"]
+                    company_name=company_val or "Enterprise Hydrocarbons Corp",
                 )
                 session.add(new_user)
                 await session.commit()
-                return True, "Account registered successfully. Please log in."
+                return True, "Account created successfully! Please switch to Login."
             except IntegrityError:
                 await session.rollback()
-                return False, "Database constraint error: duplicate entry detected."
-            except SQLAlchemyError as e:
+                return False, "Registration failed due to duplicate entry."
+            except Exception as e:
                 await session.rollback()
-                return False, f"Database exception: {str(e)}"
+                return False, f"Error: {str(e)}"
         else:
             try:
-                result = await session.execute(select(User).where(User.username == username_val))
+                result = await session.execute(
+                    select(UserModel).where(UserModel.email == email_val)
+                )
                 user = result.scalar_one_or_none()
                 if user and verify_password(password_val, user.hashed_password):
-                    st.session_state.failed_attempts = 0
-                    return True, {"id": user.id, "username": user.username, "company": user.company_name}
-                st.session_state.failed_attempts += 1
-                return False, "Invalid username or password."
-            except SQLAlchemyError as e:
-                return False, f"Authentication error: {str(e)}"
+                    return True, {
+                        "id": user.id,
+                        "username": user.username,
+                        "email": user.email,
+                        "company": user.company_name,
+                    }
+                return False, "Invalid email or password."
+            except Exception as e:
+                return False, f"Login Error: {str(e)}"
+
 
 if not st.session_state.authenticated:
-    st.markdown(f"""
-    <div style="text-align: center; margin-top: 50px;">
-        {render_svg(LOGO_SVG, 85)}
-        <h1 style="color: #0047AB;">PyMudCement</h1>
-        <h3 style="color: #D4AF37;">— OPTIMA PRO —</h3>
-        <p>ENGINEERED FOR DRILLING EXCELLENCE</p>
-    </div>
-    """, unsafe_allow_html=True)
-    
-    if st.session_state.failed_attempts >= 5:
-        st.error("Account locked temporarily due to 5 consecutive failed login attempts. Please try again later.")
-        st.stop()
-        
+    st.markdown(
+        f"""
+        <div style="text-align:center; padding: 2.5rem 0 1.2rem 0;">
+            <img src="data:image/png;base64,{logo_base64}" style="height: 3.8rem; margin-bottom: 0.9rem;">
+            <div class="main-header">PyMudCement Optima Pro</div>
+            <div class="sub-header" style="border:none; margin-bottom:0;">
+                Enterprise Hydraulic Engine & Real-Time AI Diagnostics
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
     auth_mode = st.radio("Select Action", ["Login", "Register Account"], horizontal=True)
     with st.form("auth_form"):
-        username = st.text_input("Username").strip()
+        email = st.text_input("Email")
         password = st.text_input("Password", type="password")
-        email = st.text_input("Corporate Email").strip() if auth_mode == "Register Account" else None
-        company = st.text_input("Company Name", value=CONFIG["DEFAULT_COMPANY"]).strip() if auth_mode == "Register Account" else None
-        submit = st.form_submit_button("Submit")
-        
+        company = None
+        if auth_mode == "Register Account":
+            company = st.text_input("Company Name", value="Enterprise Hydrocarbons Corp")
+        submit = st.form_submit_button("Submit", use_container_width=True)
         if submit:
-            if not username or not password:
-                st.error("Username and password are required.")
+            if not email or not password:
+                st.error("Please enter both email and password.")
             else:
-                success, response = run_async(process_authentication(auth_mode, username, password, email, company))
+                success, response = asyncio.run(
+                    process_authentication(auth_mode, email, password, company)
+                )
                 if auth_mode == "Register Account":
-                    if success:
-                        st.success(response)
-                    else:
-                        st.error(response)
+                    st.success(response) if success else st.error(response)
                 else:
                     if success:
                         st.session_state.authenticated = True
@@ -186,321 +273,605 @@ if not st.session_state.authenticated:
                         st.error(response)
     st.stop()
 
-# ==============================================================================
-# MAIN APPLICATION INTERFACE
-# ============================================================================== 
+# ============================
+# MAIN HEADER
+# ============================
+h1, h2 = st.columns([1, 11])
+with h1:
+    st.image("logo.png", width=68)
+with h2:
+    st.markdown(
+        f"""
+        <div class="main-header" style="margin-top:0.35rem;">PyMudCement Optima Pro</div>
+        <div class="sub-header" style="margin-bottom:0.4rem; padding-bottom:0.5rem;">
+            <i class="fas fa-user-circle"></i> {st.session_state.user_info["username"]}
+            &nbsp;·&nbsp;
+            <i class="fas fa-building"></i> {st.session_state.user_info["company"]}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
-st.markdown(f"""
-<div class="brand-container">
-    {render_svg(LOGO_SVG, 70)}
-    <div>
-        <h1 class="brand-title"><span class="brand-title-blue">PyMudCement</span> <span class="brand-title-gold">OPTIMA PRO</span></h1>
-        <div class="brand-tagline">ENTERPRISE DRILLING HYDRAULICS & COMPLETION ENGINE</div>
-    </div>
-</div>
-""", unsafe_allow_html=True)
-
-st.caption(f"Logged in as: {st.session_state.user_info['username']} | Organization: {st.session_state.user_info['company']}")
-st.divider()
-
+# ============================
+# SIDEBAR
+# ============================
 with st.sidebar:
-    st.markdown(f"""
-    <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 20px;">
-        {render_svg(LOGO_SVG, 42)}
-        <h3 style="margin: 0; color: #0047AB;">Optima Controls</h3>
-    </div>
-    """, unsafe_allow_html=True)
-    
-    unit_system = st.selectbox("Unit System", ["API (Imperial)", "SI (Metric)"])
-    is_si = unit_system == "SI (Metric)"
-    
-    total_depth_label = "Total Depth (m MD)" if is_si else "Total Depth (ft MD)"
-    flow_rate_label = "Flow Rate (L/min)" if is_si else "Flow Rate (GPM)"
-    mw_label = "Surface Mud Weight (kg/m³)" if is_si else "Surface Mud Weight (ppg)"
-    
-    total_depth_default = 3048.0 if is_si else CONFIG["DEFAULT_TOTAL_DEPTH"]
-    flow_rate_default = 2082.0 if is_si else CONFIG["DEFAULT_FLOW_RATE"]
-    surface_mw_default = 1498.0 if is_si else CONFIG["DEFAULT_SURFACE_MW"]
-    
-    total_depth = st.number_input(total_depth_label, value=total_depth_default, step=150.0)
-    flow_rate = st.number_input(flow_rate_label, value=flow_rate_default, step=50.0)
-    surface_mw = st.number_input(mw_label, value=surface_mw_default, step=1.0 if is_si else 0.1)
-    
-    rheology = st.selectbox("Rheology Model", [r.value for r in RheologyModel])
-    pv = st.number_input("Plastic Viscosity (cP)", value=CONFIG["DEFAULT_PV"], step=1.0)
-    yp = st.number_input("Yield Point (lb/100ft²)", value=CONFIG["DEFAULT_YP"], step=1.0)
-    
-    st.subheader("Bit Nozzles (32nds in)")
-    nozzle_input_str = st.text_input("Enter Nozzle Sizes (comma-separated)", value="12, 12, 12")
-    
+    st.image("logo.png", width=34)
+    st.markdown("### Well & Mud Parameters")
+
+    with st.expander("Well Geometry", expanded=True):
+        total_depth = st.number_input(
+            "Total Depth / MD (ft)", value=10000.0, step=500.0,
+            help="Measured Depth of the well."
+        )
+        tvd = st.number_input(
+            "True Vertical Depth – TVD (ft)", value=10000.0, step=500.0,
+            help="Used for ECD and hydrostatic calculations. Equal to MD for vertical wells."
+        )
+        flow_rate = st.number_input("Flow Rate (GPM)", value=550.0, step=25.0)
+
+    with st.expander("Mud Properties", expanded=True):
+        default_mw = st.session_state.auto_mw if st.session_state.auto_mw is not None else 12.5
+        surface_mw = st.number_input("Surface Mud Weight (ppg)", value=default_mw, step=0.1)
+        rheology = st.selectbox("Rheology Model", [r.value for r in RheologyModel])
+        default_pv = st.session_state.auto_pv if st.session_state.auto_pv is not None else 22.0
+        default_yp = st.session_state.auto_yp if st.session_state.auto_yp is not None else 16.0
+        pv = st.number_input("Plastic Viscosity (cP)", value=default_pv, step=1.0)
+        yp = st.number_input("Yield Point (lb/100ft²)", value=default_yp, step=1.0)
+
+    st.divider()
+    st.markdown(
+        '<div class="sidebar-heading"><i class="fas fa-file-upload"></i> Upload Mud Report</div>',
+        unsafe_allow_html=True,
+    )
+    uploaded_file = st.file_uploader("CSV or Excel", type=["csv", "xlsx"], key="mud_uploader")
+
+    if uploaded_file is not None and not st.session_state.parsed:
+        try:
+            file_type = "csv" if uploaded_file.type == "text/csv" else "excel"
+            data = parse_mud_report(uploaded_file.read(), file_type)
+            st.session_state.auto_pv = data["pv_cp"]
+            st.session_state.auto_yp = data["yp"]
+            st.session_state.auto_mw = data["mw_ppg"]
+            st.session_state.parsed = True
+            st.sidebar.success(
+                f"Parsed · PV={data['pv_cp']} · YP={data['yp']} · MW={data['mw_ppg']} ppg"
+            )
+        except Exception as e:
+            st.sidebar.error(f"Parse error: {e}")
+            st.session_state.parsed = False
+
+    if uploaded_file is None and st.session_state.parsed:
+        st.session_state.parsed = False
+
+    st.divider()
+    st.markdown(
+        '<div class="sidebar-heading"><i class="fas fa-chart-line"></i> Pore / Fracture Gradients</div>',
+        unsafe_allow_html=True,
+    )
+    st.caption("Depth-dependent gradients (ppg)")
+    grad_df = st.data_editor(
+        pd.DataFrame({
+            "Depth (ft)": [5000, 10000],
+            "Pore Pressure (ppg)": [9.0, 9.5],
+            "Fracture Gradient (ppg)": [14.0, 15.5],
+        }),
+        num_rows="dynamic",
+        key="gradient_editor",
+    )
+    st.session_state.gradient_df = grad_df
+
+    st.divider()
     if st.button("Log Out", use_container_width=True):
         st.session_state.authenticated = False
-        st.session_state.user_info = None
         st.rerun()
 
-tabs = st.tabs(["📊 Hydraulics Matrix", "🎯 3D Trajectory (MCM)", "🤖 Multi-Factor Diagnostics", "📄 PDF Export"])
+# ============================
+# MAIN TABS
+# ============================
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    "Hydraulics Matrix",
+    "3D Well Trajectory",
+    "AI Co-Pilot",
+    "Cementing Design",
+    "PDF Export",
+])
 
-# ==============================================================================
-# TAB 1: HYDRAULICS MATRIX
-# ============================================================================== 
-
-with tabs[0]:
-    st.subheader("Multi-Segment Wellbore Geometry")
-
-    if "segments" not in st.session_state:
-        st.session_state["segments"] = pd.DataFrame([
-            {"Segment Name": "Surface Drill Pipe", "Length (ft)": 7000.0, "Pipe OD (in)": 5.0, "Pipe ID (in)": 4.276, "Hole ID (in)": 12.25, "Mud Weight (ppg)": CONFIG["DEFAULT_SURFACE_MW"]},
-            {"Segment Name": "Heavy Weight Pipe", "Length (ft)": 2000.0, "Pipe OD (in)": 5.0, "Pipe ID (in)": 3.000, "Hole ID (in)": 8.50, "Mud Weight (ppg)": CONFIG["DEFAULT_SURFACE_MW"]},
-            {"Segment Name": "Drill Collars / BHA", "Length (ft)": 1000.0, "Pipe OD (in)": 6.75, "Pipe ID (in)": 2.250, "Hole ID (in)": 8.50, "Mud Weight (ppg)": CONFIG["DEFAULT_SURFACE_MW"]}
-        ])
-        
-    edited_df = st.data_editor(
-        st.session_state["segments"], 
-        num_rows="dynamic", 
-        use_container_width=True, 
-        key="segment_editor"
+# ---------- TAB 1: HYDRAULICS ----------
+with tab1:
+    st.markdown(
+        '<div class="section-title"><i class="fas fa-tachometer-alt"></i> Multi-Segment Wellbore Geometry</div>',
+        unsafe_allow_html=True,
     )
-    st.session_state["segments"] = edited_df
+    st.markdown(
+        '<div class="section-caption">Define each section of the drill string and open hole.</div>',
+        unsafe_allow_html=True,
+    )
 
-    @st.cache_data(show_spinner=False)
-    def compute_hydraulics_cached(flow, mw, pv_val, yp_val, rheo_model, seg_data_tuples, nozzles):
-        engine = DrillingHydraulicsEngine(
-            surface_mud_weight_ppg=mw,
-            flow_rate_gpm=flow,
-            total_depth_ft=sum(s[1] for s in seg_data_tuples),
-            plastic_viscosity_cp=pv_val,
-            yield_point_lb_100ft2=yp_val,
-            rheology_model=RheologyModel(rheo_model)
-        )
-        for name, length, od, id_pipe, hole, mw_seg in seg_data_tuples:
-            engine.add_segment(WellSegment(
-                name=name,
-                length_ft=length,
-                pipe_od_in=od,
-                pipe_id_in=id_pipe,
-                hole_id_in=hole,
-                mud_weight_ppg=mw_seg,
-                viscosity_cp=pv_val,
-                yield_point_lb_100ft2=yp_val
-            ))
-        for n_size in nozzles:
-            engine.add_nozzle(NozzleInput(size_in_32nds=n_size))
-        return engine.solve()
+    default_segments = pd.DataFrame([
+        {
+            "Segment Name": "Surface Drill Pipe",
+            "Length (ft)": 7000.0,
+            "Pipe OD (in)": 5.0,
+            "Pipe ID (in)": 4.276,
+            "Hole ID (in)": 12.25,
+            "Mud Weight (ppg)": surface_mw,
+        },
+        {
+            "Segment Name": "Heavy Weight Pipe",
+            "Length (ft)": 2000.0,
+            "Pipe OD (in)": 5.0,
+            "Pipe ID (in)": 3.000,
+            "Hole ID (in)": 8.50,
+            "Mud Weight (ppg)": surface_mw,
+        },
+        {
+            "Segment Name": "Drill Collars / BHA",
+            "Length (ft)": 1000.0,
+            "Pipe OD (in)": 6.75,
+            "Pipe ID (in)": 2.250,
+            "Hole ID (in)": 8.50,
+            "Mud Weight (ppg)": surface_mw,
+        },
+    ])
+    edited_df = st.data_editor(default_segments, num_rows="dynamic", use_container_width=True)
 
-    if st.button("Run Engineering Calculations", type="primary"):
-        try:
-            seg_tuples = [
-                (str(r["Segment Name"]), float(r["Length (ft)"]), float(r["Pipe OD (in)"]), float(r["Pipe ID (in)"]), float(r["Hole ID (in)"]), float(r["Mud Weight (ppg)"]))
-                for _, r in edited_df.iterrows()
-            ]
-            nozzles_list = [int(n.strip()) for n in nozzle_input_str.split(",") if n.strip().isdigit()]
-            if not nozzles_list:
-                nozzles_list = [12, 12, 12]
-                
-            results = compute_hydraulics_cached(flow_rate, surface_mw, pv, yp, rheology, tuple(seg_tuples), tuple(nozzles_list))
-            st.session_state.latest_results = results
-            
-            m1, m2, m3, m4 = st.columns(4)
-            m1.metric("Bottomhole ECD", f"{results['equivalent_circulating_density_ecd_ppg']} ppg")
-            m2.metric("Total SPP", f"{results['standpipe_pressure_spp_psi']} psi")
-            m3.metric("Annular Pressure Drop", f"{results['total_annular_pressure_loss_psi']} psi")
-            m4.metric("Bit Nozzle Loss", f"{results['bit_hydraulics']['bit_pressure_drop_psi']} psi")
-            
-            st.subheader("Segment Analytics Breakdown")
-            st.dataframe(pd.DataFrame(results["segment_breakdown"]), use_container_width=True)
-            
-        except ValueError as ve:
-            st.error(f"Value Configuration Error: {str(ve)}")
-        except KeyError as ke:
-            st.error(f"Missing Data Schema Key: {str(ke)}")
-        except SQLAlchemyError as se:
-            st.error(f"Database Error: {str(se)}")
-        except Exception as e:
-            st.error(f"Unexpected Engine Execution Failure: {str(e)}")
-
-# ==============================================================================
-# TAB 2: 3D TRAJECTORY (MINIMUM CURVATURE METHOD)
-# ============================================================================== 
-
-with tabs[1]:
-    st.subheader("3D Wellbore Survey Profile (Minimum Curvature Method)")
-
-    if "survey" not in st.session_state:
-        st.session_state["survey"] = pd.DataFrame([
-            {"MD (ft)": 0.0, "Inc (deg)": 0.0, "Az (deg)": 0.0},
-            {"MD (ft)": 3000.0, "Inc (deg)": 0.0, "Az (deg)": 0.0},
-            {"MD (ft)": 6000.0, "Inc (deg)": 25.0, "Az (deg)": 45.0},
-            {"MD (ft)": total_depth, "Inc (deg)": 45.0, "Az (deg)": 60.0}
-        ])
-        
-    edited_survey = st.data_editor(st.session_state["survey"], num_rows="dynamic", use_container_width=True, key="survey_editor")
-    st.session_state["survey"] = edited_survey
-
-    def validate_survey_data(df: pd.DataFrame) -> Tuple[bool, str]:
-        norm_df = df.copy()
-        norm_df.columns = [str(c).strip().lower() for c in norm_df.columns]
-        md_col = next((c for c in norm_df.columns if 'md' in c), None)
-        inc_col = next((c for c in norm_df.columns if 'inc' in c), None)
-        az_col = next((c for c in norm_df.columns if 'az' in c or 'azi' in c), None)
-        
-        if not md_col or not inc_col or not az_col:
-            return False, "Required columns (MD, Inc, Az) missing in survey data."
-        if norm_df[[md_col, inc_col, az_col]].isnull().any().any():
-            return False, "Survey data contains missing/null values."
-            
-        md_vals = norm_df[md_col].values
-        inc_vals = norm_df[inc_col].values
-        az_vals = norm_df[az_col].values
-        
-        if not np.all(np.diff(md_vals) > 0):
-            return False, "Measured Depth (MD) must be strictly increasing."
-        if not np.all((inc_vals >= 0.0) & (inc_vals <= 180.0)):
-            return False, "Inclination values must remain between 0 and 180 degrees."
-        if not np.all((az_vals >= 0.0) & (az_vals <= 360.0)):
-            return False, "Azimuth values must remain between 0 and 360 degrees."
-        return True, ""
-
-    is_valid, err_msg = validate_survey_data(edited_survey)
-    if not is_valid:
-        st.error(f"Survey Validation Error: {err_msg}")
-    else:
-        def calculate_mcm(df: pd.DataFrame):
-            norm_df = df.copy()
-            norm_df.columns = [str(c).strip().lower() for c in norm_df.columns]
-            md_col, inc_col, az_col = norm_df.columns[0], norm_df.columns[1], norm_df.columns[2]
-            md = norm_df[md_col].values
-            inc = np.radians(norm_df[inc_col].values)
-            az = np.radians(norm_df[az_col].values)
-            n = len(md)
-            x, y, z = np.zeros(n), np.zeros(n), np.zeros(n)
-            
-            for i in range(1, n):
-                d1 = md[i] - md[i-1]
-                if d1 == 0:
-                    continue
-                i1, i2 = inc[i-1], inc[i]
-                a1, a2 = az[i-1], az[i]
-                cos_dl = np.cos(i2 - i1) - (np.sin(i1) * np.sin(i2) * (1 - np.cos(a2 - a1)))
-                cos_dl = np.clip(cos_dl, -1.0, 1.0)
-                dl = np.arccos(cos_dl)
-                rf = (2 / dl) * np.tan(dl / 2) if dl > 1e-6 else 1.0
-                dz = (d1 / 2) * (np.cos(i1) + np.cos(i2)) * rf
-                dx = (d1 / 2) * (np.sin(i1) * np.sin(a1) + np.sin(i2) * np.sin(a2)) * rf
-                dy = (d1 / 2) * (np.sin(i1) * np.cos(a1) + np.sin(i2) * np.cos(a2)) * rf
-                z[i] = z[i-1] - dz
-                x[i] = x[i-1] + dx
-                y[i] = y[i-1] + dy
-            return x, y, z
-
-        x_coords, y_coords, z_coords = calculate_mcm(edited_survey)
-        fig = go.Figure(data=[go.Scatter3d(
-            x=x_coords, y=y_coords, z=z_coords,
-            mode='lines+markers',
-            line=dict(color='#2563EB', width=6),
-            marker=dict(size=4, color='#F97316')
-        )])
-        fig.update_layout(
-            scene=dict(
-                xaxis_title='Easting (ft)',
-                yaxis_title='Northing (ft)',
-                zaxis_title='True Vertical Depth (ft)'
-            ),
-            margin=dict(l=0, r=0, b=0, t=30),
-            height=550
-        )
-        st.plotly_chart(fig, use_container_width=True)
-
-# ==============================================================================
-# TAB 3: MULTI-FACTOR AI DIAGNOSTICS
-# ============================================================================== 
-
-with tabs[2]:
-    st.subheader("🤖 Comprehensive Multi-Factor Diagnostic Engine")
-
-    if "latest_results" in st.session_state:
-        res = st.session_state.latest_results
-        ecd = res["equivalent_circulating_density_ecd_ppg"]
-        spp = res["standpipe_pressure_spp_psi"]
-        bit_dp = res["bit_hydraulics"]["bit_pressure_drop_psi"]
-        bit_ratio = bit_dp / spp if spp > 0 else 0.0
-        
-        ecd_status = "SAFE" if ecd <= CONFIG["ECD_FRACTURE_LIMIT_PPG"] else "CRITICAL"
-        bit_status = "OPTIMAL" if CONFIG["BIT_PRESSURE_RATIO_MIN"] <= bit_ratio <= CONFIG["BIT_PRESSURE_RATIO_MAX"] else "SUB-OPTIMAL"
-        cleaning_status = "ADEQUATE" if flow_rate >= 450.0 else "RISK (Low Annular Velocity)"
-        
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            st.markdown(f"**ECD Gradient Integrity**")
-            badge_class = "badge-pass" if ecd_status == "SAFE" else "badge-fail"
-            st.markdown(f'<span class="{badge_class}">{ecd_status}</span>', unsafe_allow_html=True)
-            st.caption(f"Current ECD: {ecd} ppg | Limit: {CONFIG['ECD_FRACTURE_LIMIT_PPG']} ppg")
-        with c2:
-            st.markdown(f"**Bit Hydraulic Energy Ratio**")
-            badge_class = "badge-pass" if bit_status == "OPTIMAL" else "badge-warn"
-            st.markdown(f'<span class="{badge_class}">{bit_status}</span>', unsafe_allow_html=True)
-            st.caption(f"Bit Ratio: {bit_ratio:.2%} | Target: 50% - 65%")
-        with c3:
-            st.markdown(f"**Hole Cleaning Transport**")
-            badge_class = "badge-pass" if cleaning_status == "ADEQUATE" else "badge-warn"
-            st.markdown(f'<span class="{badge_class}">{cleaning_status}</span>', unsafe_allow_html=True)
-            st.caption(f"Flow Rate: {flow_rate} GPM equivalents")
-            
-        st.divider()
-        st.markdown("### Engineering Recommendations")
-        recs = []
-        if ecd_status == "CRITICAL":
-            recs.append("• **Fracture Risk**: Lower pump flow rate or reduce yield point/PV via dilution to reduce total friction drop.")
-        if bit_status == "SUB-OPTIMAL":
-            recs.append("• **Nozzle Sizing**: Adjust bit nozzle total flow area (TFA) to match the target 50-65% SPP pressure drop window.")
-        if cleaning_status != "ADEQUATE":
-            recs.append("• **Cuttings Settling**: Increase GPM or augment mud yield point to prevent cuttings bed buildup in angled sections.")
-            
-        if not recs:
-            st.success("All operational parameters fall within acceptable enterprise tolerances.")
-        else:
-            for rec in recs:
-                st.write(rec)
-    else:
-        st.info("Run hydraulics calculation in Tab 1 to generate telemetry diagnostics.")
-
-# ==============================================================================
-# TAB 4: PDF EXPORT
-# ============================================================================== 
-
-with tabs[3]:
-    st.subheader("📄 Export Compliance Documentation")
-
-    if "latest_results" in st.session_state:
-        if st.button("Generate Branded PDF Report", type="primary"):
+    if st.button("Run Engineering Calculations", type="primary", use_container_width=True):
+        with st.spinner("Solving hydraulics..."):
             try:
+                engine = DrillingHydraulicsEngine(
+                    surface_mud_weight_ppg=surface_mw,
+                    flow_rate_gpm=flow_rate,
+                    total_depth_ft=total_depth,
+                    true_vertical_depth_ft=tvd,          # ★ TVD for correct ECD
+                    plastic_viscosity_cp=pv,
+                    yield_point_lb_100ft2=yp,
+                    rheology_model=RheologyModel(rheology),
+                )
+                for _, row in edited_df.iterrows():
+                    engine.add_segment(
+                        WellSegment(
+                            name=str(row["Segment Name"]),
+                            length_ft=float(row["Length (ft)"]),
+                            pipe_od_in=float(row["Pipe OD (in)"]),
+                            pipe_id_in=float(row["Pipe ID (in)"]),
+                            hole_id_in=float(row["Hole ID (in)"]),
+                            mud_weight_ppg=float(row["Mud Weight (ppg)"]),
+                            viscosity_cp=pv,
+                            yield_point_lb_100ft2=yp,
+                        )
+                    )
+                for _ in range(3):
+                    engine.add_nozzle(NozzleInput(size_in_32nds=12))
+
+                results = engine.solve()
+                st.session_state.latest_results = results
+
+                st.markdown(
+                    '<div class="section-title" style="margin-top:1.4rem;"><i class="fas fa-chart-simple"></i> Key Hydraulics Metrics</div>',
+                    unsafe_allow_html=True,
+                )
+                c1, c2, c3, c4 = st.columns(4)
+                with c1:
+                    st.markdown(
+                        f"""
+                        <div class="metric-card">
+                            <div class="label"><i class="fas fa-weight-scale"></i> ECD (at TVD)</div>
+                            <div class="value">{results['equivalent_circulating_density_ecd_ppg']:.3f} <span style="font-size:0.85rem;font-weight:600;">ppg</span></div>
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+                with c2:
+                    st.markdown(
+                        f"""
+                        <div class="metric-card">
+                            <div class="label"><i class="fas fa-gauge-high"></i> Standpipe Pressure</div>
+                            <div class="value">{results['standpipe_pressure_spp_psi']:.1f} <span style="font-size:0.85rem;font-weight:600;">psi</span></div>
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+                with c3:
+                    st.markdown(
+                        f"""
+                        <div class="metric-card">
+                            <div class="label"><i class="fas fa-arrows-spin"></i> Annular Loss</div>
+                            <div class="value">{results['total_annular_pressure_loss_psi']:.1f} <span style="font-size:0.85rem;font-weight:600;">psi</span></div>
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+                with c4:
+                    st.markdown(
+                        f"""
+                        <div class="metric-card">
+                            <div class="label"><i class="fas fa-water"></i> Bit Nozzle Loss</div>
+                            <div class="value">{results['bit_hydraulics']['bit_pressure_drop_psi']:.1f} <span style="font-size:0.85rem;font-weight:600;">psi</span></div>
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+
+                st.caption(
+                    f"MD = {results['total_depth_ft']:,.0f} ft  ·  "
+                    f"TVD = {results['true_vertical_depth_ft']:,.0f} ft  ·  "
+                    f"Rheology = {results['rheology_model_used']}"
+                )
+
+                st.markdown(
+                    '<div class="section-title" style="margin-top:1.6rem;"><i class="fas fa-list-ul"></i> Segment Analytics</div>',
+                    unsafe_allow_html=True,
+                )
+                st.dataframe(pd.DataFrame(results["segment_breakdown"]), use_container_width=True)
+
+                # Formation integrity check
+                if "gradient_df" in st.session_state and not st.session_state.gradient_df.empty:
+                    gdf = st.session_state.gradient_df.copy().apply(pd.to_numeric, errors="coerce").dropna()
+                    if not gdf.empty:
+                        try:
+                            profile = PressureGradientProfile(
+                                depths=gdf["Depth (ft)"].tolist(),
+                                pore_pressures=gdf["Pore Pressure (ppg)"].tolist(),
+                                frac_gradients=gdf["Fracture Gradient (ppg)"].tolist(),
+                            )
+                            safe = profile.get_safe_window(total_depth)
+                            ecd = results["equivalent_circulating_density_ecd_ppg"]
+
+                            st.markdown(
+                                '<div class="section-title" style="margin-top:1.6rem;"><i class="fas fa-shield-halved"></i> Formation Pressure Integrity</div>',
+                                unsafe_allow_html=True,
+                            )
+                            m1, m2, m3 = st.columns(3)
+                            m1.metric("Pore Pressure at TD", f"{safe['pore']:.2f} ppg")
+                            m2.metric("Fracture Gradient at TD", f"{safe['fracture']:.2f} ppg")
+                            m3.metric("Current ECD", f"{ecd:.3f} ppg")
+
+                            if ecd > safe["fracture"]:
+                                st.error(
+                                    f"**CRITICAL** · ECD {ecd:.2f} ppg exceeds fracture gradient "
+                                    f"{safe['fracture']:.2f} ppg."
+                                )
+                                with st.expander("Recommended Actions"):
+                                    st.write("- Reduce flow rate (GPM)")
+                                    st.write("- Lower mud weight if safe")
+                                    st.write("- Increase circulation before continuing")
+                            elif ecd > safe["fracture"] * 0.95:
+                                st.warning(
+                                    f"ECD {ecd:.2f} ppg approaching fracture limit {safe['fracture']:.2f} ppg."
+                                )
+                            elif ecd < safe["pore"]:
+                                st.warning(
+                                    f"ECD {ecd:.2f} ppg below pore pressure {safe['pore']:.2f} ppg – influx risk."
+                                )
+                            else:
+                                st.success(
+                                    f"ECD {ecd:.2f} ppg within safe window "
+                                    f"[{safe['min_mw_ppg']:.2f} – {safe['max_mw_ppg']:.2f}] ppg."
+                                )
+                        except Exception as e:
+                            st.warning(f"Could not build gradient profile: {e}")
+
+                # Hole cleaning
+                last_ann_vel = results["segment_breakdown"][-1]["annular_velocity_fpm"]
+                slip = engine.calculate_cuttings_slip_velocity(surface_mw, pv)
+                ratio = last_ann_vel / slip if slip > 0 else 0
+                if ratio < 1.5:
+                    st.warning(
+                        f"Low cuttings transport ratio ({ratio:.2f}). Consider increasing flow rate."
+                    )
+                else:
+                    st.success(f"Cuttings transport ratio {ratio:.2f} – adequate.")
+
+            except Exception as e:
+                st.error(f"Execution Error: {str(e)}")
+
+# ---------- TAB 2: 3D TRAJECTORY ----------
+with tab2:
+    st.markdown(
+        '<div class="section-title"><i class="fas fa-globe"></i> Interactive 3D Well Trajectory</div>',
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        '<div class="section-caption">Directional wellpath with vertical, build, tangent, and drop sections.</div>',
+        unsafe_allow_html=True,
+    )
+
+    try:
+        is_dark = st.context.theme.type == "dark"
+    except Exception:
+        is_dark = False
+
+    md = np.linspace(0, total_depth, 200)
+    inc = np.zeros_like(md)
+    az = np.radians(np.full_like(md, 60.0))
+
+    mask_vert = md <= 2000
+    inc[mask_vert] = 0.0
+    mask_build = (md > 2000) & (md <= 5000)
+    frac_build = (md[mask_build] - 2000) / 3000
+    inc[mask_build] = np.radians(45.0 * frac_build)
+    mask_tang = (md > 5000) & (md <= 8000)
+    inc[mask_tang] = np.radians(45.0)
+    mask_drop = (md > 8000) & (md <= total_depth)
+    frac_drop = (md[mask_drop] - 8000) / max(total_depth - 8000, 1)
+    inc[mask_drop] = np.radians(45.0 - 15.0 * frac_drop)
+
+    x = np.zeros_like(md)
+    y = np.zeros_like(md)
+    z = np.zeros_like(md)
+    for i in range(1, len(md)):
+        dmd = md[i] - md[i - 1]
+        avg_inc = (inc[i] + inc[i - 1]) / 2
+        avg_az = (az[i] + az[i - 1]) / 2
+        x[i] = x[i - 1] + dmd * np.sin(avg_inc) * np.cos(avg_az)
+        y[i] = y[i - 1] + dmd * np.sin(avg_inc) * np.sin(avg_az)
+        z[i] = z[i - 1] + dmd * np.cos(avg_inc)
+
+    grid_c = "#334155" if is_dark else "#e2e8f0"
+    axis_c = "#94a3b8" if is_dark else "#475569"
+    scene_bg = "rgba(0,0,0,0)"
+
+    fig = go.Figure()
+    fig.add_trace(
+        go.Scatter3d(
+            x=x, y=y, z=z, mode="lines",
+            line=dict(color=z, colorscale="Viridis", width=6, showscale=True, colorbar=dict(title="Depth (ft)")),
+            name="Wellpath",
+        )
+    )
+    key_depths = [0, 2000, 5000, 8000, total_depth]
+    key_labels = ["Surface", "KOP", "EOB", "Start Drop", "TD"]
+    idxs = [np.argmin(np.abs(md - d)) for d in key_depths]
+    fig.add_trace(
+        go.Scatter3d(
+            x=x[idxs], y=y[idxs], z=z[idxs],
+            mode="markers+text",
+            marker=dict(size=6, color="#ef4444"),
+            text=key_labels, textposition="top center",
+            name="Key points",
+        )
+    )
+    fig.add_trace(
+        go.Scatter3d(
+            x=[0, 0], y=[0, 0], z=[0, -200],
+            mode="lines", line=dict(color="#94a3b8", width=2, dash="dash"),
+            showlegend=False,
+        )
+    )
+    fig.update_layout(
+        scene=dict(
+            xaxis_title="Easting (ft)",
+            yaxis_title="Northing (ft)",
+            zaxis_title="TVD (ft)",
+            bgcolor=scene_bg,
+            xaxis=dict(backgroundcolor=scene_bg, gridcolor=grid_c, color=axis_c, zerolinecolor=grid_c),
+            yaxis=dict(backgroundcolor=scene_bg, gridcolor=grid_c, color=axis_c, zerolinecolor=grid_c),
+            zaxis=dict(
+                backgroundcolor=scene_bg, gridcolor=grid_c, color=axis_c,
+                zerolinecolor=grid_c, autorange="reversed",
+            ),
+        ),
+        margin=dict(l=0, r=0, b=0, t=30),
+        height=650,
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        legend=dict(
+            x=0.02, y=0.98,
+            bgcolor="rgba(0,0,0,0.4)" if is_dark else "rgba(255,255,255,0.85)",
+            font=dict(color="white" if is_dark else "black"),
+        ),
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+# ---------- TAB 3: AI DIAGNOSTICS ----------
+with tab3:
+    st.markdown(
+        '<div class="section-title"><i class="fas fa-brain"></i> AI Real-Time Drilling Assistant</div>',
+        unsafe_allow_html=True,
+    )
+    if "latest_results" in st.session_state:
+        ecd = st.session_state.latest_results["equivalent_circulating_density_ecd_ppg"]
+        if ecd > 15.0:
+            st.error("**CRITICAL ALERT** · ECD exceeds 15.0 ppg structural fracture limit.")
+            with st.expander("Recommended Actions"):
+                st.write("1. Reduce pump SPM to lower annular velocity.")
+                st.write("2. Dilute mud to reduce Plastic Viscosity.")
+        else:
+            st.success("**SAFE OPERATIONAL GRADIENT** · Within dynamic pore-fracture window.")
+            st.info("Hydraulics, hole cleaning, and nozzle velocities meet operating requirements.")
+    else:
+        st.info("Run calculations on the Hydraulics Matrix tab to activate AI diagnostics.")
+
+# ---------- TAB 4: CEMENTING ----------
+with tab4:
+    st.markdown(
+        '<div class="section-title"><i class="fas fa-hard-hat"></i> Primary Cementing & P&A Plug Design</div>',
+        unsafe_allow_html=True,
+    )
+
+    col1, col2 = st.columns(2)
+    with col1:
+        hole_dia = st.number_input("Hole Diameter (in)", value=8.5, min_value=4.0, step=0.5)
+        casing_od = st.number_input("Casing OD (in)", value=7.0, min_value=2.0, step=0.5)
+        casing_id = st.number_input("Casing ID (in)", value=6.276, min_value=1.0, step=0.1)
+        interval_ft = st.number_input("Cemented Interval Length (ft)", value=5000.0, step=100.0)
+        washout_pct = st.number_input("Washout Factor (%)", value=15.0, step=1.0)
+        shoe_track = st.number_input("Shoe Track Length (ft)", value=40.0, step=5.0)
+    with col2:
+        lead_dens = st.number_input("Lead Slurry Density (ppg)", value=12.5, step=0.1)
+        tail_dens = st.number_input("Tail Slurry Density (ppg)", value=15.8, step=0.1)
+        spacer_dens = st.number_input("Spacer Density (ppg)", value=11.0, step=0.1)
+        disp_dens = st.number_input("Displacement Fluid Density (ppg)", value=10.0, step=0.1)
+        tail_length = st.number_input("Tail Spurry Length (ft)", value=500.0, step=50.0)
+        bht = st.number_input("Bottom Hole Temperature (°F)", value=180.0, step=5.0)
+
+    st.markdown("---")
+    st.markdown("**Spacer Design** (volume calculated from geometry – no hard-coded value)")
+    sc1, sc2 = st.columns(2)
+    with sc1:
+        spacer_length = st.number_input(
+            "Spacer Annular Coverage (ft)",
+            value=500.0,
+            step=50.0,
+            help="Length of annulus the spacer should cover. Volume is calculated automatically.",
+        )
+    with sc2:
+        use_override = st.checkbox("Override spacer volume manually")
+        spacer_override = None
+        if use_override:
+            spacer_override = st.number_input("Spacer Volume Override (bbl)", value=50.0, step=5.0)
+
+    if st.button("Run Cementing Design", key="cement_btn", type="primary", use_container_width=True):
+        with st.spinner("Calculating cement job..."):
+            try:
+                params = PrimaryCementingInput(
+                    hole_diameter_in=hole_dia,
+                    casing_od_in=casing_od,
+                    casing_id_in=casing_id,
+                    interval_length_ft=interval_ft,
+                    washout_factor_pct=washout_pct,
+                    shoe_track_length_ft=shoe_track,
+                    lead_slurry_density_ppg=lead_dens,
+                    tail_slurry_density_ppg=tail_dens,
+                    spacer_density_ppg=spacer_dens,
+                    displacement_fluid_density_ppg=disp_dens,
+                    tail_slurry_length_ft=tail_length,
+                    bht_fahrenheit=bht,
+                    spacer_annular_length_ft=spacer_length,
+                    spacer_volume_override_bbl=spacer_override,
+                    true_vertical_depth_ft=tvd,
+                )
+                engine = CementingEngine()
+                result = engine.design_primary_job(params)
+                st.session_state.cementing_results = result
+                st.session_state.cementing_params = {
+                    "casing_od": casing_od,
+                    "hole_dia": hole_dia,
+                    "interval_ft": interval_ft,
+                }
+
+                st.markdown(
+                    '<div class="section-title" style="margin-top:1.4rem;"><i class="fas fa-flask"></i> Cementing Job Volumes</div>',
+                    unsafe_allow_html=True,
+                )
+                v1, v2, v3, v4 = st.columns(4)
+                v1.metric("Lead Slurry", f"{result['lead_slurry_volume_bbl']:.2f} bbl")
+                v2.metric("Tail Slurry", f"{result['tail_slurry_volume_bbl']:.2f} bbl")
+                v3.metric("Spacer", f"{result['spacer_volume_bbl']:.2f} bbl")
+                v4.metric("Displacement", f"{result['displacement_volume_bbl']:.2f} bbl")
+
+                st.caption(
+                    f"Spacer method: {result.get('spacer_calculation_method', 'n/a')}  ·  "
+                    f"TVD used for plug bump: {result.get('tvd_used_ft', interval_ft):,.0f} ft"
+                )
+                st.metric(
+                    "Recommended Plug Bumping Pressure",
+                    f"{result['recommended_plug_bumping_pressure_psi']:.1f} psi",
+                )
+
+                st.markdown(
+                    '<div class="section-title" style="margin-top:1.4rem;"><i class="fas fa-flask"></i> Suggested Additives</div>',
+                    unsafe_allow_html=True,
+                )
+                for add in result["suggested_additives"]:
+                    st.write(f"**{add['name']}** ({add['category']}) – {add['description']}")
+
+                st.markdown(
+                    '<div class="section-title" style="margin-top:1.4rem;"><i class="fas fa-plug"></i> P&A / Side-Track Plug</div>',
+                    unsafe_allow_html=True,
+                )
+                with st.expander("Design an abandonment plug"):
+                    plug_len = st.number_input("Plug Length (ft)", value=200.0, step=50.0, key="plug_len")
+                    plug_dens = st.number_input("Plug Slurry Density (ppg)", value=15.0, step=0.1, key="plug_dens")
+                    mud_dens = st.number_input("Mud Density in Hole (ppg)", value=12.0, step=0.1, key="mud_dens")
+                    if st.button("Calculate Plug", key="plug_btn"):
+                        pr = engine.design_abandonment_plug(
+                            hole_dia_in=hole_dia,
+                            plug_length_ft=plug_len,
+                            slurry_density_ppg=plug_dens,
+                            mud_density_ppg=mud_dens,
+                        )
+                        st.write(f"**Plug Volume:** {pr['plug_volume_bbl']:.2f} bbl")
+                        st.write(f"**Cement Sacks:** {pr['cement_sacks_required']} sk")
+                        st.write(f"**Hydrostatic Gain:** {pr['net_hydrostatic_gain_psi']:.1f} psi")
+            except Exception as e:
+                st.error(f"Cementing calculation error: {e}")
+
+    if st.button("Compare with Industry Benchmarks", key="bench_btn"):
+        if st.session_state.cementing_results and st.session_state.cementing_params:
+            result = st.session_state.cementing_results
+            p = st.session_state.cementing_params
+            comp = compare_cementing_results(
+                result, p["casing_od"], p["hole_dia"], p["interval_ft"]
+            )
+            st.markdown(
+                '<div class="section-title" style="margin-top:1.4rem;"><i class="fas fa-chart-bar"></i> Industry Benchmark Comparison</div>',
+                unsafe_allow_html=True,
+            )
+            if "error" in comp:
+                st.warning(comp["error"])
+            else:
+                st.write(f"**Configuration:** {comp['description']}")
+                b1, b2 = st.columns(2)
+                b1.metric(
+                    "Lead Slurry",
+                    f"{comp['lead_slurry']['software']:.2f} bbl",
+                    f"{comp['lead_slurry']['deviation_pct']:.1f}% vs industry",
+                )
+                b2.metric(
+                    "Tail Slurry",
+                    f"{comp['tail_slurry']['software']:.2f} bbl",
+                    f"{comp['tail_slurry']['deviation_pct']:.1f}% vs industry",
+                )
+                st.metric(
+                    "Spacer Volume",
+                    f"{comp['spacer']['software']:.2f} bbl",
+                    f"{comp['spacer']['deviation_pct']:.1f}% vs industry",
+                )
+                if abs(comp["lead_slurry"]["deviation_pct"]) > 15 or abs(comp["tail_slurry"]["deviation_pct"]) > 15:
+                    st.warning("Deviation >15% from industry standards – review assumptions.")
+        else:
+            st.warning("Run the cementing design first.")
+
+# ---------- TAB 5: PDF EXPORT ----------
+with tab5:
+    st.markdown(
+        '<div class="section-title"><i class="fas fa-file-pdf"></i> Export Branded PDF Compliance Report</div>',
+        unsafe_allow_html=True,
+    )
+    if "latest_results" in st.session_state:
+        if st.button("Generate Branded Field PDF", type="primary", use_container_width=True):
+            with st.spinner("Generating PDF..."):
                 project_meta = {
                     "name": "Deepwater Wilcox Target",
                     "rig_name": "Rig-05 Executive",
-                    "company": st.session_state.user_info["company"]
+                    "company": st.session_state.user_info["company"],
                 }
-                ecd_val = st.session_state.latest_results["equivalent_circulating_density_ecd_ppg"]
+                ecd = st.session_state.latest_results["equivalent_circulating_density_ecd_ppg"]
                 diag_meta = {
-                    "severity": "GREEN" if ecd_val <= CONFIG["ECD_FRACTURE_LIMIT_PPG"] else "RED",
-                    "matched_hazard": "Formation Fracturing Risk" if ecd_val > CONFIG["ECD_FRACTURE_LIMIT_PPG"] else "None",
-                    "detailed_diagnosis": f"Operating ECD calculated at {ecd_val} ppg."
+                    "severity": "GREEN" if ecd < 15.0 else "RED",
+                    "matched_hazard": "Formation Fracturing Risk" if ecd >= 15.0 else "None",
+                    "detailed_diagnosis": f"Operating ECD is {ecd:.2f} ppg.",
                 }
                 pdf_buffer = generate_pdf_payload(
                     project_meta,
                     st.session_state.latest_results,
                     diag_meta,
-                    engineer_name=st.session_state.user_info["username"]
+                    engineer_name=st.session_state.user_info["username"],
+                    cementing_results=st.session_state.get("cementing_results"),
                 )
                 st.download_button(
-                    label="📥 Download PDF Document",
+                    label="Download PDF Document",
                     data=pdf_buffer,
                     file_name=f"PyMudCement_Report_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.pdf",
-                    mime="application/pdf"
+                    mime="application/pdf",
+                    use_container_width=True,
                 )
-            except KeyError as ke:
-                st.error(f"Failed to resolve report schema key: {str(ke)}")
-            except ValueError as ve:
-                st.error(f"Value error generating PDF buffer: {str(ve)}")
-            except Exception as e:
-                st.error(f"Unexpected error producing PDF: {str(e)}")
     else:
-        st.warning("Please compute hydraulics in Tab 1 prior to report generation.")
+        st.warning("Run hydraulics calculations first.")
+
+st.markdown(
+    '<div class="footer">© 2026 PyMudCement Optima Pro · PENG 258 Capstone</div>',
+    unsafe_allow_html=True,
+)
