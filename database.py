@@ -3,6 +3,7 @@ from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sess
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 from sqlalchemy import String, Integer, ForeignKey, DateTime, JSON
 from datetime import datetime
+from typing import Optional
 
 DATABASE_URL = "sqlite+aiosqlite:///./pymudcement.db"
 
@@ -15,7 +16,7 @@ class Base(DeclarativeBase):
 class UserModel(Base):
     __tablename__ = "users"
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
-    username: Mapped[str] = mapped_column(String(50), unique=True, index=True)
+    username: Mapped[Optional[str]] = mapped_column(String(50), unique=True, index=True, nullable=True)
     email: Mapped[str] = mapped_column(String(100), unique=True, index=True)
     hashed_password: Mapped[str] = mapped_column(String(255))
     role: Mapped[str] = mapped_column(String(20), default="Engineer")
@@ -40,7 +41,6 @@ async def init_db():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
-# Dependency to get a database session (for FastAPI)
 async def get_db():
     async with AsyncSessionLocal() as session:
         yield session
